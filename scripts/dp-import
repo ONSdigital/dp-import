@@ -265,7 +265,14 @@ db_ins_ob() {
         fi
         inst $id
 }
-avro(){ local inst_id=$1 job_id= file_url=; shift; cd $ONS_DP_SRC_ROOT/go-ns || exit 2; inst_id=$(like_to_id instance $inst_id); job_id=$(inst_to_job $inst_id); file_url=$(job_to_file $job_id); HUMAN_LOG=1 go run -race cmd/avro-example/main.go --s3 "$file_url" --id $inst_id "$@"; }
+avro(){
+    local inst_id=$1 job_id= file_url=; shift
+    cd $ONS_DP_SRC_ROOT/dp-import || exit 2
+    inst_id=$(like_to_id instance $inst_id); if [[ -z $inst_id ]]; then g_warn Cannot get instance id; return 1; fi
+    job_id=$(inst_to_job $inst_id);  if [[ -z $job_id ]]; then g_warn Cannot get job_id from instance id $inst_id; return 1; fi
+    file_url=$(job_to_file $job_id); if [[ -z $file_url ]]; then g_warn Cannot get file_url from job: $job_id instance: $inst_id; return 1; fi
+    HUMAN_LOG=1 go run -race cmd/avro-kafka/main.go --kafka "$KAFKA_ADDR" --s3 "$file_url" --id "$inst_id" "$@"
+}
 dim_x(){ avro $1 --topic input-file-available; }
 ins_ob(){ avro $1 --topic import-observations-inserted --inserts $2; }
 
