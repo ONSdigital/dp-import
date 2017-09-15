@@ -1,0 +1,297 @@
+#!/usr/bin/env bash
+
+usage(){
+    echo "${0##*/} args..."
+    cat <<'EOFusage'
+
+ID arguments in the following can usually be abbreviated (save typing).
+'args' can be:
+
+    create                  create an import-job using json to the ImportAPI
+    submit                  change an import-job to state:submitted on the ImportAPI
+    job $jid                get an import-job from the ImportAPI
+    jobs                    get a list of import-jobs from the ImportAPI
+    submitted               get a filtered list of (1) import-jobs from ImportAPI (2) instances from DatasetAPI
+    created                 similar to 'submitted'
+    inst [$iid]             get an instance (or all instances) from the DatasetAPI
+    dim_x                   create a kafka message consumed by the dimension-extractor
+
+    db_wipe                 wipe all DBs (after confirmation!)
+    db                      display all DBs
+
+    tot_ob $iid $tot        update total_observations via mongo
+    db_ins_ob $iid $inc     increment total_inserted_observations via mongo
+    ins_ob    $iid $inc     create kafka message to increment total_inserted_observations
+
+    inst_to_job $iid        undoc'd utilities...
+    inst_to_cols $iid
+    inst_to_dims $iid
+    inst_to_col1 $iid
+    inst_like $iid
+    job_to_file $jid
+
+    neo                     more undoc'd utilities...
+    neo_count
+    neo_nodes
+    cypher_obs
+    mongo_all
+    mongo_wipe
+    add_file
+EOFusage
+}
+
+. g_lib.sh
+
+IMPORT_API_ADDR=${IMPORT_API_ADDR:-localhost:21800}
+IMPORT_API_AUTH_TOKEN=${IMPORT_API_AUTH_TOKEN:-FD0108EA-825D-411C-9B1D-41EF7727F465}
+DATASET_API_ADDR=${DATASET_API_ADDR:-localhost:22000}
+DATASET_API_AUTH_TOKEN=${DATASET_API_AUTH_TOKEN:-$IMPORT_API_AUTH_TOKEN}
+ONS_DP_SRC_ROOT=${ONS_DP_SRC_ROOT:-$HOME/go/src/github.com/ONSdigital}
+
+f_count=0
+
+import_api_dir=$ONS_DP_SRC_ROOT/dp-import-api
+
+# postgres (now unused, but see $legacy)
+db_name=ImportJobs
+# set this non-empty if using postgres (blank => mongo)
+legacy=
+
+# neo4j
+cypher_client=neo4j-client
+cypher_args=neo4j://neo4j@localhost:7687
+cypher_client=cypher-shell
+cypher_args="--format plain"
+
+# mongo (see $legacy)
+mongo_imports_db=imports
+mongo_imports_c=imports
+mongo_datasets_db=datasets
+mongo_datasets_c=datasets
+mongo_instances_c=instances
+mongo_cmd="mongo --quiet"
+
+# s3_file='s3://dp-dimension-extractor/OCIGrowth.csv'
+# s3_file='s3://dp-dimension-extractor/EXAMPLE_V4-coicopcomb.csv'
+# s3_file='https://s3-eu-west-1.amazonaws.com/dp-frontend-florence-file-uploads/2470609-EXAMPLE_V4-coicopcomb-inc-geo-codecsv'
+# s3_file='s3://dp-dimension-extractor/EXAMPLE_V4-Internal Migration Done.csv'
+# s3_file='https://s3-eu-west-1.amazonaws.com/dp-frontend-florence-file-uploads/2470609-EXAMPLE_V4-coicopcomb-inc-geo-code2csv'
+# no longer there...  s3_file='s3://dp-frontend-florence-file-uploads/2470609-EXAMPLE_V4-coicopcomb-inc-geo-code2csv'
+s3_file='s3://dp-dimension-extractor/EXAMPLE_V4-coicopcomb-inc-geo-code.csv'
+
+#       create_json='{"recipe":"v4","state":"created","files":[{"alias_name":"v4","url":"s3://dp-publish-content-test/OCIGrowth.csv"}]}'
+#       create_json='{"recipe":"v4","files":[{"alias_name":"v4","url":"s3://dp-publish-content-test/OCIGrowth.csv"}]}'
+# XXX magic b944be78-f56d-409b-9ebd-ab2b77ffe187 for the import-api to send direct to dimension-extractor
+create_json='{"recipe":"b944be78-f56d-409b-9ebd-ab2b77ffe187","files":[{"alias_name":"v4","url":"'"$s3_file"'"}]}'
+
+#       submit_json='{"id":"<job_id>","state":"submitted"}'
+submit_json='{"state":"submitted"}'
+
+add_file_json='{"alias_name":"v4-2","url":"'"$s3_file"'_22"}'
+
+curl_w_json_cmd="curl -sSH \"Content-type: application/json\" -H \"Internal-token: $IMPORT_API_AUTH_TOKEN\""
+
+show_r_js="function show_(r){if(r==null){print('');return;};if(r.hasNext != undefined){while(r.hasNext()){printjson(r.next());}}else{printjson(r)}}"
+ppj_js="function p(r){print(r);};function pj(r){printjson(r)}"
+
+# unused
+cypher_obs1() {
+        local id=$1; id=$(like_to_id instance $id)
+        echo 'MATCH (time:`_'"$id"'_Time`),
+    (geo:`_'"$id"'_Geography`),
+    (aggr:`_'"$id"'_Aggregate`)
+WHERE aggr.value = "cpi1dim1G10100"
+    AND time.value = "Jan-96"
+    AND geo.value = "K02000001"
+WITH time,geo,aggr
+MATCH (o:`_'"$id"'_observation`), (o)-[:isValueOf]->(time),
+    (o)-[:isValueOf]->(geo),
+    (o)-[:isValueOf]->(aggr)
+RETURN o
+LIMIT 2;'
+}
+
+cypher_obs() {
+        local id=$(like_to_id instance $1) col_count=0
+        local cols=$(inst_to_dims $id)
+        declare -A col_as=()
+        echo -en "MATCH\t"
+        col_count=0; for col in $cols; do (( ++col_count > 1 )) && echo -en ",\n\t"
+                local col_key=${col:0:3} col_len=3; while [[ -n "${col_as[$col_key]}" ]]; do col_len++; col_key=${col:0:$col_len}; done; col_as[$col]=$col_key
+                echo -n "(${col_key}:\`_${id}_${col}\`)"
+        done
+        echo -en "\nWHERE\t    "
+        col_count=0; for col in $cols; do (( ++col_count > 1 )) && echo -en '\n\tAND '
+                echo -n "${col_as[$col]}"'.value = ""'
+        done
+        echo -en "\nWITH\t"
+        col_count=0; for col in $cols; do (( ++col_count > 1 )) && echo -n ", "
+                echo -n "${col_as[$col]}"
+        done
+        echo -en "\nMATCH\t(obs:\`_${id}_observation\`)"
+        for col in $cols; do
+                echo -en ",\n\t(obs)-[:isValueOf]->(${col_as[$col]})"
+        done
+        echo -e "\nRETURN obs\nLIMIT 2;"
+}
+
+neo(){
+        local id=$1; id=$(like_to_id instance $id)
+        cypher_obs $id
+        yorn Run above against Neo4j... || return
+        cypher_obs $id | $cypher_client $cypher_args
+        # yorn Pretty print... || return
+        # cypher_obs | $cypher_client $cypher_args | perl -nE '$.==2 and s/""/"/g and s/(^"|"$)//g and print'
+}
+
+neo_do(){ while [[ -n $1 ]]; do yorn --x $cypher_client $cypher_args "$1" || return; shift; done; }
+neo_count(){ local id=$(like_to_id instance $1); neo_do "MATCH (o:\`_${id}_observation\`) RETURN COUNT(o);"; }
+neo_wipe(){
+        yorn --x "brew service stop neo4j && rm -rf /usr/local/Cellar/neo4j/*/libexec/data/databases/graph.db && brew service start neo4j"
+        neo_do "MATCH (n) DETACH DELETE n;"
+}
+#   neo_wipe(){ neo_do "MATCH (n) OPTIONAL MATCH (n)-[r]-() DELETE r,n;"; }
+#   neo_wipe(){ neo_do "MATCH ()-[r]-() DELETE r;" "MATCH (n) DELETE n;"; }
+#   neo_nodes(){ neo_do "MATCH node(*) RETURN COUNT(n) AS node_count;"; }
+neo_nodes(){ local id=$(like_to_id instance $1); [[ -z $id ]] && return 1; neo_do "MATCH (n:\`_${id}_observation\`) RETURN COUNT(n) AS obs_count;" "MATCH (n) RETURN COUNT(n) AS node_count;"; }
+neo_all(){ neo_nodes . || return 1; }
+
+create() {
+        local url= instance_id=
+        g_info "New import job... " >&2
+        echo $create_json|jq .
+        yorn POST above to API $IMPORT_API_ADDR/jobs || return
+        local json= out=$(eval $curl_w_json_cmd -i -X POST -d \'"$create_json"\' $IMPORT_API_ADDR/jobs)
+        get_json "$out"
+        if [[ -n $legacy ]]; then
+                instance_id=$(echo "$json" | jq -r '.instances[0].id')
+        else
+                # g_warn out="${out//}"
+                instance_id=$(echo "$json" | jq -r '.links.instances[0].id')
+                #works: echo "$json" | jq -r '.Links.instances[0].id'
+                [[ $instance_id == null ]] && instance_id=
+        fi
+        g_warn "i_id=:$instance_id:"
+        [[ -n $instance_id ]] && inst $instance_id
+}
+
+gen_url(){ local sub_url=$1 arg=$2; shift 2; if [[ $sub_url != */* ]]; then if [[ $sub_url == instances ]]; then sub_url=$DATASET_API_ADDR/$sub_url; else sub_url=$IMPORT_API_ADDR/$sub_url; fi; fi; [[ -n $arg ]] && sub_url=$sub_url/$arg; echo $sub_url; }
+api_raw(){ local method=$1 url=$2; local out=$(eval $curl_w_json_cmd -X $method $url); echo "$out"; }
+
+getter() {
+        local db_type=$1 url=$2; shift 2
+        if [[ -n $url ]]; then url=$(like_to_id $db_type $url); [[ -z $url ]] && return 1; fi; url=$(gen_url ${db_type}s $url)
+        g_info "Getting ${db_type} info... $url " >&2
+        api_raw GET $url
+}
+inst() { local url=$1; shift; getter instance $url | jq .; }
+inst_to_job() { getter instance "$@" | jq -r .links.job.id -; }
+inst_to_cols() { getter instance "$@" | jq -r .headers -; }
+inst_to_all() { getter instance "$@" | perl -MJSON -E '{local $/; $h=decode_json <>; $col=0; for my $h (@{ $hash->{headers} }){ $col++; if ($col==1) { $x=($h =~ s/V4_//r); say "$col\tx=$x\t$h" if 0; next; } if ($col<=$skip) { say "$col\tskip\y$h" if 0; next; } say $h if ($col-$x)%2; } }'; }
+inst_to_dims() { local col1=$(inst_to_col1 "$@"); getter instance "$@" | perl -MJSON -E '{local $/; $h=decode_json <>; for(my $c=1+'"$col1"'; $c<@{$h->{headers}}; $c+=2){ say $h->{headers}->[$c]; } }'; }
+inst_to_col1() { getter instance "$@" | perl -MJSON -E '{local $/; $h=decode_json <>; say 1+($h->{headers}->[0] =~ s/V4_//r);}'; }
+job_to_file() { getter job "$@" | jq -r '.files[0].url' -; }
+jobs_(){ local url=$1; shift; getter job $url | jq .; }
+
+submit(){ local url=$1; shift; url=$(like_to_id job $url); url=$(gen_url jobs $url); g_info "Submitting import (state=>submitted): PUT $url " >&2
+        local out=$(eval $curl_w_json_cmd -i -X PUT -d \'"$submit_json"\' $url)
+        get_json "$out"
+}
+
+add_file(){ local url=$1; shift; url=$(like_to_id job $url); url=$(gen_url jobs $url)/files; g_info "Adding file: PUT $url" >&2
+        echo "$add_file_json" | jq .
+        local out=$(eval $curl_w_json_cmd -i -X PUT -d \'"$add_file_json"\' $url)
+        get_json "$out"
+}
+
+get_json(){
+        local out=$1; shift
+        echo "out=:$out:"
+        json=$(echo "$out" | perl -nE 'if (/^\s*$/...eof()){ s/^[\r\n]+//m; print;}')
+        echo "$json" | jq .
+}
+states(){ local url= otype=$1 states=$2; shift 2; url=$(gen_url $otype)\?state=$states; g_info "Getting $otype: GET $url" >&2
+        local out=$(eval $curl_w_json_cmd -i "$url")
+        get_json "$out"
+}
+
+do_mongo_raw() {
+        local temp_js=/tmp/temp_js_$$_$f_count.js res=0 js=$1; shift; let f_count++
+        echo "$js" > $temp_js # grep . $temp_js /dev/null >&2
+        if ! eval $mongo_cmd "$@" $temp_js | perl -pE 's/ObjectId\("([^"]+)"\)/"oId_$1"/g;'; then res=$? ;grep --color . $temp_js /dev/null >&2; fi
+        rm $temp_js
+        return $res
+}
+do_mongo_r() { local js=$1; shift; do_mongo_raw "$ppj_js;$show_r_js;$js;" "$@"; }
+do_mongo() { local js=$1; shift; do_mongo_raw "$ppj_js;r=$js;$show_r_js;show_(r);" "$@"; }
+do_mongo_imports() { do_mongo "$@" $mongo_imports_db; }
+do_mongo_datasets() { do_mongo "$@" $mongo_datasets_db; }
+like_to_id() {
+        if [[ $2 == */* ]]; then echo $1; return; fi # poss useless?
+        if [[ -n $legacy ]]; then
+                psql -U dp $db_name -Atc "SELECT ${1}id FROM ${1}s WHERE ${1}id LIKE '$2%'"
+        elif [[ $1 == instance ]]; then
+                do_mongo_datasets "db.getCollection('$mongo_instances_c').findOne({id:/^$2/}, {id:1})" | jq -r .id
+        else # job
+                # 'print(JSON.stringify(db.s3.getIndexes(), null, 8),JSON.stringify(db.meta.getIndexes(), null, 8))'
+                # echo do_mongo_imports "db.getCollection('$mongo_imports_c').find({id:/^$2/}, {id:1})"
+                # g_info $mongo_imports_c $2 $(do_mongo_imports "db.getCollection('$mongo_imports_c').find({id:/^$2/}, {id:1})")  >&2
+                do_mongo_imports "db.getCollection('$mongo_imports_c').findOne({id:/^$2/}, {id:1})" | jq -r .id
+        fi
+}
+inst_like(){
+        if [[ -n $legacy ]]; then
+                psql -U dp $db_name -Atc 'SELECT instance FROM instances WHERE instanceid LIKE '"'$1%'" | jq .
+        else
+                do_mongo_datasets "db.getCollection('$mongo_instances_c').find({id:/^$2/})" | jq .
+        fi
+}
+tot_ob() {
+        local id=$1 obs=$2; shift 2; [[ -z $obs ]] && obs=1000; id=$(like_to_id instance $id)
+        inst $id
+        if [[ -n $legacy ]]; then
+                psql -U dp $db_name -c 'UPDATE instances SET instance=instance || JSONB('"'"'{"total_observations":'"${obs}}'"') WHERE instanceid = '"'$id'"
+        else
+                do_mongo_datasets "db.getCollection('$mongo_instances_c').update({id:'$id'}, {\$set:{total_observations:$obs}})" | jq .
+        fi
+        inst $id
+}
+db_ins_ob() {
+        local id=$1 obs=$2; shift 2; [[ -z $obs ]] && obs=200; id=$(like_to_id instance $id)
+        if [[ -n $legacy ]]; then
+                psql -U dp $db_name -c 'UPDATE instances SET instance=instance || JSONB('"'"'{"total_inserted_observations":'"${obs}}'"') WHERE instanceid = '"'$id'"
+        else
+                do_mongo_datasets "db.getCollection('$mongo_instances_c').update({id:'$id'}, {\$inc:{total_inserted_observations:$obs}})" | jq .
+        fi
+        inst $id
+}
+avro(){ local inst_id=$1 job_id= file_url=; shift; cd $ONS_DP_SRC_ROOT/go-ns || exit 2; inst_id=$(like_to_id instance $inst_id); job_id=$(inst_to_job $inst_id); file_url=$(job_to_file $job_id); HUMAN_LOG=1 go run -race cmd/avro-example/main.go --s3 "$file_url" --id $inst_id "$@"; }
+dim_x(){ avro $1 --topic input-file-available; }
+ins_ob(){ avro $1 --topic import-observations-inserted --inserts $2; }
+
+pg_all ()   { psql -U dp $db_name -c 'SELECT * FROM jobs;' -c 'SELECT * FROM instances;' -c 'SELECT * FROM dimensions;' -c 'SELECT COUNT(*) FROM dimensions;'; }
+pg_wipe()   { yorn --x psql -U dp $db_name -f $import_api_dir/scripts/InitDatabase.sql; }
+mongo_all (){ yorn --x do_mongo_r "db=db.getSiblingDB('$mongo_imports_db');p('coll $mongo_imports_c');r=db.getCollection('$mongo_imports_c').find();show_(r);db=db.getSiblingDB('$mongo_datasets_db');p('coll $mongo_instances_c');r=db.getCollection('$mongo_instances_c').find();show_(r)"; }
+mongo_wipe(){ yorn --x do_mongo_r "db=db.getSiblingDB('$mongo_imports_db');show_(db.getCollection('$mongo_imports_c').deleteMany({})); db=db.getSiblingDB('$mongo_datasets_db'); show_(db.getCollection('$mongo_instances_c').deleteMany({}));"; }
+db     (){ if [[ -z $legacy ]] ;then mongo_all;  else pg_all;  fi; neo_all; }
+db_wipe(){ if [[ -z $legacy ]] ;then mongo_wipe; else pg_wipe; fi; neo_wipe; }
+tester() { do_mongo_imports "db.getCollection('$mongo_imports_c').find({id:/^$1/}, {id:1})"; }
+#tester() { like_to_id job 1d; }
+
+do=$1; shift; do=${do#--}
+if   [[ $do == create        ]]; then $do
+elif [[ $do == job           ]]; then jobs_ "$@"
+elif [[ $do == jobs          ]]; then jobs_ "$@"
+elif [[ $do == test          ]]; then eval $mongo_cmd $mongo_imports_db --eval \""db.getCollection('$mongo_imports_c').find()"\"
+elif [[ :submitted:created: == *:$do:* ]]; then
+        states jobs $do "$@"
+        states instances $do "$@"
+elif [[ :tester:inst:inst_to_job:inst_to_cols:inst_to_dims:inst_to_col1:inst_like:job_to_file:tot_ob:db_ins_ob:ins_ob:submit:db_wipe:db:dim_x:neo:neo_count:neo_nodes:cypher_obs:mongo_all:mongo_wipe:add_file: == *:$do:* ]]; then
+        $do "$@"
+elif [[ $do == help ]]; then
+        usage
+else
+        usage >&2
+        g_die 2 Do not recognise arg: $do
+fi
+res=$?; (( res > 0 )) && g_die $res "$do failed: $res"
