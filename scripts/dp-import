@@ -300,7 +300,7 @@ elif [[ :submitted:created: == *:$do:* ]]; then
         states instances $do "$@"
 elif [[ :tester:inst:inst_to_job:inst_to_cols:inst_to_dims:inst_to_col1:inst_like:job_to_file:tot_ob:db_ins_ob:ins_ob:submit:db_wipe:db:dim_x:neo:neo_count:neo_nodes:cypher_obs:mongo_all:mongo_wipe:add_file:health:ok: == *:$do:* ]]; then
         $do "$@"
-elif [[ $do == help ]]; then
+elif [[ $do == help || $do == -h ]]; then
         usage
 else
         usage >&2
