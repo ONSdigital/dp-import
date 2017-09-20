@@ -9,26 +9,28 @@ ID arguments in the following can usually be abbreviated (save typing).
 
     create                  create an import-job using json to the ImportAPI
     submit                  change an import-job to state:submitted on the ImportAPI
-    job $jid                get an import-job from the ImportAPI
+    job       $jid          get an import-job from the ImportAPI
     jobs                    get a list of import-jobs from the ImportAPI
     submitted               get a filtered list of (1) import-jobs from ImportAPI (2) instances from DatasetAPI
     created                 similar to 'submitted'
-    inst [$iid]             get an instance (or all instances) from the DatasetAPI
-    dim_x                   create a kafka message consumed by the dimension-extractor
+    inst      [$iid]        get an instance (or all instances) from the DatasetAPI
+    dim_x     $iid          create a kafka message consumed by the dimension-extractor
 
     db_wipe                 wipe all DBs (after confirmation!)
     db                      display all DBs
 
-    tot_ob $iid $tot        update total_observations via mongo
+    tot_ob    $iid $tot     update total_observations via mongo
     db_ins_ob $iid $inc     increment total_inserted_observations via mongo
     ins_ob    $iid $inc     create kafka message to increment total_inserted_observations
 
-    inst_to_job $iid        undoc'd utilities...
+    inst_to_job  $iid       undoc'd utilities...
     inst_to_cols $iid
     inst_to_dims $iid
     inst_to_col1 $iid
-    inst_like $iid
-    job_to_file $jid
+    inst_like    $iid
+    job_to_file  $jid
+
+    ok|health               query the /healthcheck endpoints
 
     neo                     more undoc'd utilities...
     neo_count
@@ -177,6 +179,7 @@ create() {
 
 gen_url(){ local sub_url=$1 arg=$2; shift 2; if [[ $sub_url != */* ]]; then if [[ $sub_url == instances ]]; then sub_url=$DATASET_API_ADDR/$sub_url; else sub_url=$IMPORT_API_ADDR/$sub_url; fi; fi; [[ -n $arg ]] && sub_url=$sub_url/$arg; echo $sub_url; }
 api_raw(){ local method=$1 url=$2; local out=$(eval $curl_w_json_cmd -X $method $url); echo "$out"; }
+api_raw_hdrs(){ local method=$1 url=$2; local out=$(eval $curl_w_json_cmd -i -X $method $url); echo "$out"; }
 
 getter() {
         local db_type=$1 url=$2; shift 2
@@ -284,6 +287,8 @@ db     (){ if [[ -z $legacy ]] ;then mongo_all;  else pg_all;  fi; neo_all; }
 db_wipe(){ if [[ -z $legacy ]] ;then mongo_wipe; else pg_wipe; fi; neo_wipe; }
 tester() { do_mongo_imports "db.getCollection('$mongo_imports_c').find({id:/^$1/}, {id:1})"; }
 #tester() { like_to_id job 1d; }
+health(){ yorn --x api_raw_hdrs GET $IMPORT_API_ADDR/healthcheck; yorn --x api_raw_hdrs GET $DATASET_API_ADDR/healthcheck; }
+ok(){ health "$@"; }
 
 do=$1; shift; do=${do#--}
 if   [[ $do == create        ]]; then $do
@@ -293,7 +298,7 @@ elif [[ $do == test          ]]; then eval $mongo_cmd $mongo_imports_db --eval \
 elif [[ :submitted:created: == *:$do:* ]]; then
         states jobs $do "$@"
         states instances $do "$@"
-elif [[ :tester:inst:inst_to_job:inst_to_cols:inst_to_dims:inst_to_col1:inst_like:job_to_file:tot_ob:db_ins_ob:ins_ob:submit:db_wipe:db:dim_x:neo:neo_count:neo_nodes:cypher_obs:mongo_all:mongo_wipe:add_file: == *:$do:* ]]; then
+elif [[ :tester:inst:inst_to_job:inst_to_cols:inst_to_dims:inst_to_col1:inst_like:job_to_file:tot_ob:db_ins_ob:ins_ob:submit:db_wipe:db:dim_x:neo:neo_count:neo_nodes:cypher_obs:mongo_all:mongo_wipe:add_file:health:ok: == *:$do:* ]]; then
         $do "$@"
 elif [[ $do == help ]]; then
         usage
