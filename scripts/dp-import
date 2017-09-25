@@ -48,6 +48,7 @@ IMPORT_API_ADDR=${IMPORT_API_ADDR:-localhost:21800}
 IMPORT_API_AUTH_TOKEN=${IMPORT_API_AUTH_TOKEN:-FD0108EA-825D-411C-9B1D-41EF7727F465}
 DATASET_API_ADDR=${DATASET_API_ADDR:-localhost:22000}
 DATASET_API_AUTH_TOKEN=${DATASET_API_AUTH_TOKEN:-$IMPORT_API_AUTH_TOKEN}
+RECIPE_API_ADDR=${RECIPE_API_ADDR:-localhost:22300}
 ONS_DP_SRC_ROOT=${ONS_DP_SRC_ROOT:-$HOME/go/src/github.com/ONSdigital}
 
 f_count=0
@@ -70,8 +71,12 @@ mongo_imports_db=imports
 mongo_imports_c=imports
 mongo_datasets_db=datasets
 mongo_datasets_c=datasets
+mongo_instances_db=$mongo_datasets_db
 mongo_instances_c=instances
+mongo_dimensions_db=$mongo_datasets_db
+mongo_dimensions_c=dimensions
 mongo_cmd="mongo --quiet"
+mongo_js='var all={"imports":{"db":"'"$mongo_imports_db"'","coll":"'"$mongo_imports_c"'"},"instances":{"db":"'"$mongo_instances_db"'","coll":"'"$mongo_instances_c"'"},"datasets":{"db":"'"$mongo_datasets_db"'","coll":"'"$mongo_datasets_c"'"},"dimensions":{"db":"'"$mongo_dimensions_db"'","coll":"'"$mongo_dimensions_c"'"}}'
 
 # s3_file='s3://dp-dimension-extractor/OCIGrowth.csv'
 # s3_file='s3://dp-dimension-extractor/EXAMPLE_V4-coicopcomb.csv'
@@ -149,7 +154,8 @@ neo(){
 neo_do(){ while [[ -n $1 ]]; do yorn --x $cypher_client $cypher_args "$1" || return; shift; done; }
 neo_count(){ local id=$(like_to_id instance $1); neo_do "MATCH (o:\`_${id}_observation\`) RETURN COUNT(o);"; }
 neo_wipe(){
-        yorn --x "brew service stop neo4j && rm -rf /usr/local/Cellar/neo4j/*/libexec/data/databases/graph.db && brew service start neo4j"
+        yorn --xc brew services stop neo4j
+        yorn --xc rm -rf /usr/local/Cellar/neo4j/*/libexec/data/databases/graph.db && brew services start neo4j
         neo_do "MATCH (n) DETACH DELETE n;"
 }
 #   neo_wipe(){ neo_do "MATCH (n) OPTIONAL MATCH (n)-[r]-() DELETE r,n;"; }
@@ -177,7 +183,15 @@ create() {
         [[ -n $instance_id ]] && inst $instance_id
 }
 
-gen_url(){ local sub_url=$1 arg=$2; shift 2; if [[ $sub_url != */* ]]; then if [[ $sub_url == instances ]]; then sub_url=$DATASET_API_ADDR/$sub_url; else sub_url=$IMPORT_API_ADDR/$sub_url; fi; fi; [[ -n $arg ]] && sub_url=$sub_url/$arg; echo $sub_url; }
+gen_url(){ local sub_url=$1 arg=$2; shift 2
+        if [[ $sub_url != */* ]]; then
+                if   [[ $sub_url == instances ]]; then sub_url=$DATASET_API_ADDR/$sub_url;
+                elif [[ $sub_url == recipes   ]]; then sub_url=$RECIPE_API_ADDR/$sub_url;
+                else                                   sub_url=$IMPORT_API_ADDR/$sub_url; fi # default to ImportAPI
+        fi
+        [[ -n $arg ]] && sub_url=$sub_url/$arg
+        echo $sub_url
+}
 api_raw(){ local method=$1 url=$2; local out=$(eval $curl_w_json_cmd -X $method $url); echo "$out"; }
 api_raw_hdrs(){ local method=$1 url=$2; local out=$(eval $curl_w_json_cmd -i -X $method $url); echo "$out"; }
 
@@ -195,6 +209,7 @@ inst_to_dims() { local col1=$(inst_to_col1 "$@"); getter instance "$@" | perl -M
 inst_to_col1() { getter instance "$@" | perl -MJSON -E '{local $/; $h=decode_json <>; say 1+($h->{headers}->[0] =~ s/V4_//r);}'; }
 job_to_file() { getter job "$@" | jq -r '.files[0].url' -; }
 jobs_(){ local url=$1; shift; getter job $url | jq .; }
+recipe() { local url=$1; shift; getter recipe $url | jq .; }
 
 submit(){ local url=$1; shift; url=$(like_to_id job $url); url=$(gen_url jobs $url); g_info "Submitting import (state=>submitted): PUT $url " >&2
         local out=$(eval $curl_w_json_cmd -i -X PUT -d \'"$submit_json"\' $url)
@@ -225,14 +240,17 @@ do_mongo_raw() {
         rm $temp_js
         return $res
 }
-do_mongo_r() { local js=$1; shift; do_mongo_raw "$ppj_js;$show_r_js;$js;" "$@"; }
-do_mongo() { local js=$1; shift; do_mongo_raw "$ppj_js;r=$js;$show_r_js;show_(r);" "$@"; }
+do_mongo_r() { local js=$1; shift; do_mongo_raw "$mongo_js;$ppj_js;$show_r_js;$js;" "$@"; }
+do_mongo() { local js=$1; shift; do_mongo_raw "$mongo_js;$ppj_js;r=$js;$show_r_js;show_(r);" "$@"; }
+do_mongo_all() { local js=$1; shift; do_mongo_raw "$mongo_js;$ppj_js;$show_r_js;for(var d in all){var db=db.getSiblingDB(all[d].db);coll=db.getCollection(all[d].coll);$js;}" "$@"; }
 do_mongo_imports() { do_mongo "$@" $mongo_imports_db; }
 do_mongo_datasets() { do_mongo "$@" $mongo_datasets_db; }
 like_to_id() {
         if [[ $2 == */* ]]; then echo $1; return; fi # poss useless?
         if [[ -n $legacy ]]; then
                 psql -U dp $db_name -Atc "SELECT ${1}id FROM ${1}s WHERE ${1}id LIKE '$2%'"
+        elif [[ $1 == recipe ]]; then
+                api_raw GET $RECIPE_API_ADDR/recipes | jq -r '.items[0].id'
         elif [[ $1 == instance ]]; then
                 do_mongo_datasets "db.getCollection('$mongo_instances_c').findOne({id:/^$2/}, {id:1})" | jq -r .id
         else # job
@@ -281,13 +299,14 @@ ins_ob(){ avro $1 --topic import-observations-inserted --inserts $2; }
 
 pg_all ()   { psql -U dp $db_name -c 'SELECT * FROM jobs;' -c 'SELECT * FROM instances;' -c 'SELECT * FROM dimensions;' -c 'SELECT COUNT(*) FROM dimensions;'; }
 pg_wipe()   { yorn --x psql -U dp $db_name -f $import_api_dir/scripts/InitDatabase.sql; }
-mongo_all (){ yorn --x do_mongo_r "db=db.getSiblingDB('$mongo_imports_db');p('coll $mongo_imports_c');r=db.getCollection('$mongo_imports_c').find();show_(r);db=db.getSiblingDB('$mongo_datasets_db');p('coll $mongo_instances_c');r=db.getCollection('$mongo_instances_c').find();show_(r)"; }
-mongo_wipe(){ yorn --x do_mongo_r "db=db.getSiblingDB('$mongo_imports_db');show_(db.getCollection('$mongo_imports_c').deleteMany({})); db=db.getSiblingDB('$mongo_datasets_db'); show_(db.getCollection('$mongo_instances_c').deleteMany({}));"; }
+# mongo_all_old (){ yorn --x do_mongo_r "db=db.getSiblingDB('$mongo_imports_db');p('coll $mongo_imports_c');r=db.getCollection('$mongo_imports_c').find();show_(r);db=db.getSiblingDB('$mongo_datasets_db');p('coll $mongo_instances_c');r=db.getCollection('$mongo_instances_c').find();show_(r)"; }
+mongo_all (){ yorn --xc do_mongo_all "if(d=='dimensions'){continue;};p(d);r=coll.find();show_(r)"; yorn --xc do_mongo_all "if(d!='dimensions'){continue;};p(d);r=coll.find();show_(r)"; }
+mongo_wipe(){ yorn --xc do_mongo_all "p(d);show_(coll.deleteMany({}));"; }
 db     (){ if [[ -z $legacy ]] ;then mongo_all;  else pg_all;  fi; neo_all; }
 db_wipe(){ if [[ -z $legacy ]] ;then mongo_wipe; else pg_wipe; fi; neo_wipe; }
 tester() { do_mongo_imports "db.getCollection('$mongo_imports_c').find({id:/^$1/}, {id:1})"; }
 #tester() { like_to_id job 1d; }
-health(){ yorn --x api_raw_hdrs GET $IMPORT_API_ADDR/healthcheck; yorn --x api_raw_hdrs GET $DATASET_API_ADDR/healthcheck; }
+health(){ for i in $IMPORT_API_ADDR $DATASET_API_ADDR $RECIPE_API_ADDR; do yorn --x api_raw_hdrs GET $i/healthcheck; done; }
 ok(){ health "$@"; }
 
 do=$1; shift; do=${do#--}
@@ -298,7 +317,10 @@ elif [[ $do == test          ]]; then eval $mongo_cmd $mongo_imports_db --eval \
 elif [[ :submitted:created: == *:$do:* ]]; then
         states jobs $do "$@"
         states instances $do "$@"
-elif [[ :tester:inst:inst_to_job:inst_to_cols:inst_to_dims:inst_to_col1:inst_like:job_to_file:tot_ob:db_ins_ob:ins_ob:submit:db_wipe:db:dim_x:neo:neo_count:neo_nodes:cypher_obs:mongo_all:mongo_wipe:add_file:health:ok: == *:$do:* ]]; then
+        states recipes $do "$@"
+elif [[ :tester:inst:inst_to_job:inst_to_cols:inst_to_dims:inst_to_col1:inst_like:job_to_file: == *:$do:* \
+            || :tot_ob:db_ins_ob:ins_ob:submit:db_wipe:db:dim_x:neo:neo_count:neo_nodes:cypher_obs:mongo_all:mongo_wipe: == *:$do:* \
+            || :add_file:health:ok:recipe: == *:$do:* ]]; then
         $do "$@"
 elif [[ $do == help || $do == -h ]]; then
         usage
