@@ -11,9 +11,16 @@ ID arguments in the following can usually be abbreviated (save typing).
     submit                  change an import-job to state:submitted on the ImportAPI
     job       $jid          get an import-job from the ImportAPI
     jobs                    get a list of import-jobs from the ImportAPI
-    submitted               get a filtered list of (1) import-jobs from ImportAPI (2) instances from DatasetAPI
-    created                 similar to 'submitted'
     inst      [$iid]        get an instance (or all instances) from the DatasetAPI
+
+    dset      [$dsid]                               get a dataset (or all datasets) from the DatasetAPI
+    dset      $dsid [ $eid [ $vid [ $dimid ] ] ]    get a dataset/edition/version/dimension ('-' adds next sub-uri w/o id)
+    assoc     $dsid $eid $vid                       change a dataset state=associated on the DatasetAPI
+
+    submitted               state-filtered: import-jobs<ImportAPI; datasets,instances<DatasetAPI; recipes<RecipeAPI
+    created                 as per 'submitted'
+    associated|published    as per 'submitted', only checks datasets
+
     dim_x     $iid          create a kafka message consumed by the dimension-extractor
 
     db_wipe                 wipe all DBs (after confirmation!)
@@ -54,9 +61,11 @@ ONS_DP_SRC_ROOT=${ONS_DP_SRC_ROOT:-$HOME/go/src/github.com/ONSdigital}
 f_count=0
 
 import_api_dir=$ONS_DP_SRC_ROOT/dp-import-api
+filter_api_dir=$ONS_DP_SRC_ROOT/dp-filter-api
 
 # postgres (now unused, but see $legacy)
-db_name=ImportJobs
+import_db_name=ImportJobs
+filter_db_name=FilterJobs
 # set this non-empty if using postgres (blank => mongo)
 legacy=
 
@@ -75,8 +84,12 @@ mongo_instances_db=$mongo_datasets_db
 mongo_instances_c=instances
 mongo_dimensions_db=$mongo_datasets_db
 mongo_dimensions_c=dimensions
+mongo_editions_db=$mongo_datasets_db
+mongo_editions_c=editions
+mongo_versions_db=$mongo_datasets_db
+mongo_versions_c=versions
 mongo_cmd="mongo --quiet"
-mongo_js='var all={"imports":{"db":"'"$mongo_imports_db"'","coll":"'"$mongo_imports_c"'"},"instances":{"db":"'"$mongo_instances_db"'","coll":"'"$mongo_instances_c"'"},"datasets":{"db":"'"$mongo_datasets_db"'","coll":"'"$mongo_datasets_c"'"},"dimensions":{"db":"'"$mongo_dimensions_db"'","coll":"'"$mongo_dimensions_c"'"}}'
+mongo_js='var all={"imports":{"db":"'"$mongo_imports_db"'","coll":"'"$mongo_imports_c"'"},"instances":{"db":"'"$mongo_instances_db"'","coll":"'"$mongo_instances_c"'"},"datasets":{"db":"'"$mongo_datasets_db"'","coll":"'"$mongo_datasets_c"'"},"dimensions":{"db":"'"$mongo_dimensions_db"'","coll":"'"$mongo_dimensions_c"'"},"editions":{"db":"'"$mongo_editions_db"'","coll":"'"$mongo_editions_c"'"},"versions":{"db":"'"$mongo_versions_db"'","coll":"'"$mongo_versions_c"'"}}'
 
 # s3_file='s3://dp-dimension-extractor/OCIGrowth.csv'
 # s3_file='s3://dp-dimension-extractor/EXAMPLE_V4-coicopcomb.csv'
@@ -93,10 +106,11 @@ create_json='{"recipe":"b944be78-f56d-409b-9ebd-ab2b77ffe187","files":[{"alias_n
 
 #       submit_json='{"id":"<job_id>","state":"submitted"}'
 submit_json='{"state":"submitted"}'
+assoc_json='{"state":"associated","collection_id":"95c4669b-3ae9-4ba7-b690-87e890a1c543"}'
 
 add_file_json='{"alias_name":"v4-2","url":"'"$s3_file"'_22"}'
 
-curl_w_json_cmd="curl -sSH \"Content-type: application/json\" -H \"Internal-token: $IMPORT_API_AUTH_TOKEN\""
+auth_curl_w_json_cmd="curl -sSH \"Content-type: application/json\" -H \"Internal-token: $IMPORT_API_AUTH_TOKEN\""
 
 show_r_js="function show_(r){if(r==null){print('');return;};if(r.hasNext != undefined){while(r.hasNext()){printjson(r.next());}}else{printjson(r)}}"
 ppj_js="function p(r){print(r);};function pj(r){printjson(r)}"
@@ -169,7 +183,7 @@ create() {
         g_info "New import job... " >&2
         echo $create_json|jq .
         yorn POST above to API $IMPORT_API_ADDR/jobs || return
-        local json= out=$(eval $curl_w_json_cmd -i -X POST -d \'"$create_json"\' $IMPORT_API_ADDR/jobs)
+        local json= out=$(eval $auth_curl_w_json_cmd -i -X POST -d \'"$create_json"\' $IMPORT_API_ADDR/jobs)
         get_json "$out"
         if [[ -n $legacy ]]; then
                 instance_id=$(echo "$json" | jq -r '.instances[0].id')
@@ -183,28 +197,47 @@ create() {
         [[ -n $instance_id ]] && inst $instance_id
 }
 
-gen_url(){ local sub_url=$1 arg=$2; shift 2
+gen_url(){
+        local sub_url=$1; shift
         if [[ $sub_url != */* ]]; then
-                if   [[ $sub_url == instances ]]; then sub_url=$DATASET_API_ADDR/$sub_url;
-                elif [[ $sub_url == recipes   ]]; then sub_url=$RECIPE_API_ADDR/$sub_url;
-                else                                   sub_url=$IMPORT_API_ADDR/$sub_url; fi # default to ImportAPI
+                if   [[ :instances:datasets:dimensions:editions:versions:contacts: == *:$sub_url:* ]]; then
+                        local next_uri= # colon-separated and -terminated
+                        if   [[ :datasets: == *:$sub_url:* && -n $1 ]]; then
+                                next_uri=$sub_url:editions:versions:dimensions:
+                                sub_url=$DATASET_API_ADDR
+                        else
+                                sub_url=$DATASET_API_ADDR/$sub_url
+                        fi
+                        while [[ -n $next_uri && -n $1 ]]; do
+                                sub_url=$sub_url/${next_uri%%:*}
+                                next_uri=${next_uri#*:}
+                                [[ $1 != '-' ]] && sub_url=$sub_url/$1
+                                shift
+                        done
+                elif [[ $sub_url == recipes ]]; then
+                        sub_url=$RECIPE_API_ADDR/$sub_url;
+                else
+                        sub_url=$IMPORT_API_ADDR/$sub_url # default to ImportAPI
+                fi
         fi
-        [[ -n $arg ]] && sub_url=$sub_url/$arg
+        [[ -n $1 ]] && sub_url=$sub_url/$1
         echo $sub_url
 }
-api_raw(){ local method=$1 url=$2; local out=$(eval $curl_w_json_cmd -X $method $url); echo "$out"; }
-api_raw_hdrs(){ local method=$1 url=$2; local out=$(eval $curl_w_json_cmd -i -X $method $url); echo "$out"; }
+api_raw(){ local method=$1 url=$2; local out=$(eval $auth_curl_w_json_cmd -X $method $url); echo "$out"; }
+api_raw_hdrs(){ local method=$1 url=$2; local out=$(eval $auth_curl_w_json_cmd -i -X $method $url); echo "$out"; }
 
 getter() {
-        local db_type=$1 url=$2; shift 2
-        if [[ -n $url ]]; then url=$(like_to_id $db_type $url); [[ -z $url ]] && return 1; fi; url=$(gen_url ${db_type}s $url)
-        g_info "Getting ${db_type} info... $url " >&2
-        api_raw GET $url
+        local db_type=$1 id_or_url=$2; shift 2
+        if [[ -n $id_or_url ]]; then id_or_url=$(like_to_id $db_type $id_or_url); [[ -z $id_or_url ]] && return 1; fi
+        id_or_url=$(gen_url ${db_type}s "$id_or_url" "$@")
+        g_info "Getting ${db_type} info... $id_or_url " >&2
+        api_raw GET $id_or_url
 }
-inst() { local url=$1; shift; getter instance $url | jq .; }
-inst_to_job() { getter instance "$@" | jq -r .links.job.id -; }
+inst() { local url=$1; shift; getter instance   $url | jq .; }
+dset() {                      getter dataset    "$@" | jq .; }
+inst_to_job()  { getter instance "$@" | jq -r .links.job.id -; }
 inst_to_cols() { getter instance "$@" | jq -r .headers -; }
-inst_to_all() { getter instance "$@" | perl -MJSON -E '{local $/; $h=decode_json <>; $col=0; for my $h (@{ $hash->{headers} }){ $col++; if ($col==1) { $x=($h =~ s/V4_//r); say "$col\tx=$x\t$h" if 0; next; } if ($col<=$skip) { say "$col\tskip\y$h" if 0; next; } say $h if ($col-$x)%2; } }'; }
+inst_to_all()  { getter instance "$@" | perl -MJSON -E '{local $/; $h=decode_json <>; $col=0; for my $h (@{ $hash->{headers} }){ $col++; if ($col==1) { $x=($h =~ s/V4_//r); say "$col\tx=$x\t$h" if 0; next; } if ($col<=$skip) { say "$col\tskip\y$h" if 0; next; } say $h if ($col-$x)%2; } }'; }
 inst_to_dims() { local col1=$(inst_to_col1 "$@"); getter instance "$@" | perl -MJSON -E '{local $/; $h=decode_json <>; for(my $c=1+'"$col1"'; $c<@{$h->{headers}}; $c+=2){ say $h->{headers}->[$c]; } }'; }
 inst_to_col1() { getter instance "$@" | perl -MJSON -E '{local $/; $h=decode_json <>; say 1+($h->{headers}->[0] =~ s/V4_//r);}'; }
 job_to_file() { getter job "$@" | jq -r '.files[0].url' -; }
@@ -212,13 +245,18 @@ jobs_(){ local url=$1; shift; getter job $url | jq .; }
 recipe() { local url=$1; shift; getter recipe $url | jq .; }
 
 submit(){ local url=$1; shift; url=$(like_to_id job $url); url=$(gen_url jobs $url); g_info "Submitting import (state=>submitted): PUT $url " >&2
-        local out=$(eval $curl_w_json_cmd -i -X PUT -d \'"$submit_json"\' $url)
+        local out=$(eval $auth_curl_w_json_cmd -i -X PUT -d \'"$submit_json"\' $url)
+        get_json "$out"
+}
+
+assoc(){ local url=$1; shift; url=$(like_to_id dataset $url); url=$(gen_url datasets $url "$@"); g_info "Associating dataset (state=>associated): PUT $url " >&2
+        local out=$(eval $auth_curl_w_json_cmd -i -X PUT -d \'"$assoc_json"\' $url)
         get_json "$out"
 }
 
 add_file(){ local url=$1; shift; url=$(like_to_id job $url); url=$(gen_url jobs $url)/files; g_info "Adding file: PUT $url" >&2
         echo "$add_file_json" | jq .
-        local out=$(eval $curl_w_json_cmd -i -X PUT -d \'"$add_file_json"\' $url)
+        local out=$(eval $auth_curl_w_json_cmd -i -X PUT -d \'"$add_file_json"\' $url)
         get_json "$out"
 }
 
@@ -229,7 +267,7 @@ get_json(){
         echo "$json" | jq .
 }
 states(){ local url= otype=$1 states=$2; shift 2; url=$(gen_url $otype)\?state=$states; g_info "Getting $otype: GET $url" >&2
-        local out=$(eval $curl_w_json_cmd -i "$url")
+        local out=$(eval $auth_curl_w_json_cmd -i "$url")
         get_json "$out"
 }
 
@@ -246,12 +284,14 @@ do_mongo_all() { local js=$1; shift; do_mongo_raw "$mongo_js;$ppj_js;$show_r_js;
 do_mongo_imports() { do_mongo "$@" $mongo_imports_db; }
 do_mongo_datasets() { do_mongo "$@" $mongo_datasets_db; }
 like_to_id() {
-        if [[ $2 == */* ]]; then echo $1; return; fi # poss useless?
+        if [[ $2 == */* ]]; then echo $1; g_warn l2id "$@" >&2; return; fi # poss useless?
         if [[ -n $legacy ]]; then
-                psql -U dp $db_name -Atc "SELECT ${1}id FROM ${1}s WHERE ${1}id LIKE '$2%'"
+                psql -U dp $import_db_name -Atc "SELECT ${1}id FROM ${1}s WHERE ${1}id LIKE '$2%'"
         elif [[ $1 == recipe ]]; then
                 api_raw GET $RECIPE_API_ADDR/recipes | jq -r '.items[0].id'
-        elif [[ $1 == instance ]]; then
+        elif [[ :dataset: == *:$1:* ]]; then
+                do_mongo_datasets "db.getCollection('$mongo_datasets_c').findOne({_id:/^$2/}, {_id:1})" | jq -r ._id
+        elif [[ :instance: == *:$1:* ]]; then
                 do_mongo_datasets "db.getCollection('$mongo_instances_c').findOne({id:/^$2/}, {id:1})" | jq -r .id
         else # job
                 # 'print(JSON.stringify(db.s3.getIndexes(), null, 8),JSON.stringify(db.meta.getIndexes(), null, 8))'
@@ -262,7 +302,7 @@ like_to_id() {
 }
 inst_like(){
         if [[ -n $legacy ]]; then
-                psql -U dp $db_name -Atc 'SELECT instance FROM instances WHERE instanceid LIKE '"'$1%'" | jq .
+                psql -U dp $import_db_name -Atc 'SELECT instance FROM instances WHERE instanceid LIKE '"'$1%'" | jq .
         else
                 do_mongo_datasets "db.getCollection('$mongo_instances_c').find({id:/^$2/})" | jq .
         fi
@@ -271,7 +311,7 @@ tot_ob() {
         local id=$1 obs=$2; shift 2; [[ -z $obs ]] && obs=1000; id=$(like_to_id instance $id)
         inst $id
         if [[ -n $legacy ]]; then
-                psql -U dp $db_name -c 'UPDATE instances SET instance=instance || JSONB('"'"'{"total_observations":'"${obs}}'"') WHERE instanceid = '"'$id'"
+                psql -U dp $import_db_name -c 'UPDATE instances SET instance=instance || JSONB('"'"'{"total_observations":'"${obs}}'"') WHERE instanceid = '"'$id'"
         else
                 do_mongo_datasets "db.getCollection('$mongo_instances_c').update({id:'$id'}, {\$set:{total_observations:$obs}})" | jq .
         fi
@@ -280,7 +320,7 @@ tot_ob() {
 db_ins_ob() {
         local id=$1 obs=$2; shift 2; [[ -z $obs ]] && obs=200; id=$(like_to_id instance $id)
         if [[ -n $legacy ]]; then
-                psql -U dp $db_name -c 'UPDATE instances SET instance=instance || JSONB('"'"'{"total_inserted_observations":'"${obs}}'"') WHERE instanceid = '"'$id'"
+                psql -U dp $import_db_name -c 'UPDATE instances SET instance=instance || JSONB('"'"'{"total_inserted_observations":'"${obs}}'"') WHERE instanceid = '"'$id'"
         else
                 do_mongo_datasets "db.getCollection('$mongo_instances_c').update({id:'$id'}, {\$inc:{total_inserted_observations:$obs}})" | jq .
         fi
@@ -297,13 +337,31 @@ avro(){
 dim_x(){ avro $1 --topic input-file-available; }
 ins_ob(){ avro $1 --topic import-observations-inserted --inserts $2; }
 
-pg_all ()   { psql -U dp $db_name -c 'SELECT * FROM jobs;' -c 'SELECT * FROM instances;' -c 'SELECT * FROM dimensions;' -c 'SELECT COUNT(*) FROM dimensions;'; }
-pg_wipe()   { yorn --x psql -U dp $db_name -f $import_api_dir/scripts/InitDatabase.sql; }
+list_db(){ node -e "$mongo_js;for(db in all){ console.log(db); }"; }
+pg_all() {
+    if   [[ -n $legacy ]]; then yorn --x psql -U dp $import_db_name -c 'SELECT * FROM jobs;'    -c 'SELECT * FROM instances;' -c 'SELECT * FROM dimensions;' -c 'SELECT COUNT(*) FROM dimensions;'
+    else                        yorn --x psql -U dp $filter_db_name -c 'SELECT * FROM filters;' -c 'SELECT * FROM downloads;' -c 'SELECT * FROM dimensions;' -c 'SELECT COUNT(*) FROM dimensions;'
+    fi
+}
+pg_wipe()   {
+    if   [[ -n $legacy ]]; then yorn --x psql -U dp $import_db_name -f $import_api_dir/scripts/InitDatabase.sql
+    else                        yorn --x psql -U dp $filter_db_name -f $filter_api_dir/scripts/InitDatabase.sql
+    fi
+}
 # mongo_all_old (){ yorn --x do_mongo_r "db=db.getSiblingDB('$mongo_imports_db');p('coll $mongo_imports_c');r=db.getCollection('$mongo_imports_c').find();show_(r);db=db.getSiblingDB('$mongo_datasets_db');p('coll $mongo_instances_c');r=db.getCollection('$mongo_instances_c').find();show_(r)"; }
-mongo_all (){ yorn --xc do_mongo_all "if(d=='dimensions'){continue;};p(d);r=coll.find();show_(r)"; yorn --xc do_mongo_all "if(d!='dimensions'){continue;};p(d);r=coll.find();show_(r)"; }
+# mongo_all (){ yorn --xc do_mongo_all "if(d!='dimensions'){p(d);r=coll.find();show_(r)}"; yorn --xc do_mongo_all "if(d=='dimensions'){p(d);r=coll.find();show_(r)}"; }
+mongo_all (){ local d=
+    for d in $(list_db); do
+        if [[ -n $1 ]]; then
+            [[ " $@ " == *" $d "* ]] && do_mongo_all "if(d=='$d'){r=coll.find();show_(r)}"
+        else
+            yorn --comment "db $d" --xc do_mongo_all "if(d=='$d'){r=coll.find();show_(r)}"
+        fi
+    done
+}
 mongo_wipe(){ yorn --xc do_mongo_all "p(d);show_(coll.deleteMany({}));"; }
-db     (){ if [[ -z $legacy ]] ;then mongo_all;  else pg_all;  fi; neo_all; }
-db_wipe(){ if [[ -z $legacy ]] ;then mongo_wipe; else pg_wipe; fi; neo_wipe; }
+db     (){ mongo_all "$@";  pg_all;  neo_all; }
+db_wipe(){ mongo_wipe; pg_wipe; neo_wipe; }
 tester() { do_mongo_imports "db.getCollection('$mongo_imports_c').find({id:/^$1/}, {id:1})"; }
 #tester() { like_to_id job 1d; }
 health(){ for i in $IMPORT_API_ADDR $DATASET_API_ADDR $RECIPE_API_ADDR; do yorn --x api_raw_hdrs GET $i/healthcheck; done; }
@@ -313,12 +371,17 @@ do=$1; shift; do=${do#--}
 if   [[ $do == create        ]]; then $do
 elif [[ $do == job           ]]; then jobs_ "$@"
 elif [[ $do == jobs          ]]; then jobs_ "$@"
-elif [[ $do == test          ]]; then eval $mongo_cmd $mongo_imports_db --eval \""db.getCollection('$mongo_imports_c').find()"\"
+elif [[ $do == test          ]]; then
+        eval $mongo_cmd $mongo_imports_db --eval \""db.getCollection('$mongo_imports_c').find()"\"
 elif [[ :submitted:created: == *:$do:* ]]; then
         states jobs $do "$@"
         states instances $do "$@"
+        states datasets $do "$@"
         states recipes $do "$@"
+elif [[ :associated:published: == *:$do:* ]]; then
+        states datasets $do "$@"
 elif [[ :tester:inst:inst_to_job:inst_to_cols:inst_to_dims:inst_to_col1:inst_like:job_to_file: == *:$do:* \
+            || :dset:assoc: == *:$do:* \
             || :tot_ob:db_ins_ob:ins_ob:submit:db_wipe:db:dim_x:neo:neo_count:neo_nodes:cypher_obs:mongo_all:mongo_wipe: == *:$do:* \
             || :add_file:health:ok:recipe: == *:$do:* ]]; then
         $do "$@"

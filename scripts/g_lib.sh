@@ -67,12 +67,12 @@ yorn() {
 			res=1	# skip --no when 'all'
 		else
 			res=0
-			[[ -n $do_it ]] && g_info EXEC: $(g_colr bright_white "$@")
+			[[ -n $do_it ]] && g_info EXEC: "$comment"$(g_colr bright_white "$@")
 		fi
 	fi
 	while [[ -z $res ]]; do
-                if g_zsh; then read -k 1 yorn\?"$(g_info $comment"$@") [$(g_colr -r bright_blue "$(g_colr cyan ${def:0:1})${def:1}${g_all}q")] "
-		else           read -n 1 -p    "$(g_info $comment"$@") [$(g_colr -r bright_blue "$(g_colr cyan ${def:0:1})${def:1}${g_all}q")] " yorn
+                if g_zsh; then read -k 1 yorn\?"$(g_info "$comment""$@") [$(g_colr -r bright_blue "$(g_colr cyan ${def:0:1})${def:1}${g_all}q")] "
+		else           read -n 1 -p    "$(g_info "$comment""$@") [$(g_colr -r bright_blue "$(g_colr cyan ${def:0:1})${def:1}${g_all}q")] " yorn
 		fi
 		(( $(g_col) > 1 )) && echo
 		if [[ -z $yorn || $yorn == " " || $yorn == $'\n' ]]; then yorn=${def:0:1}; fi
