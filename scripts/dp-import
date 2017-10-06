@@ -8,10 +8,12 @@ ID arguments in the following can usually be abbreviated (save typing).
 'args' can be:
 
     create                  create an import-job using json to the ImportAPI
+    create_filt [$iid]      create a filter-job with instance_id in json to FilterAPI
     submit                  change an import-job to state:submitted on the ImportAPI
     job       $jid          get an import-job from the ImportAPI
     jobs                    get a list of import-jobs from the ImportAPI
     inst      [$iid]        get an instance (or all instances) from the DatasetAPI
+    filt      [$fid]        get a filter job (or all) from the FilterAPI
 
     dset      [$dsid]                               get a dataset (or all datasets) from the DatasetAPI
     dset      $dsid [ $eid [ $vid [ $dimid ] ] ]    get a dataset/edition/version/dimension ('-' adds next sub-uri w/o id)
@@ -55,6 +57,8 @@ IMPORT_API_ADDR=${IMPORT_API_ADDR:-localhost:21800}
 IMPORT_API_AUTH_TOKEN=${IMPORT_API_AUTH_TOKEN:-FD0108EA-825D-411C-9B1D-41EF7727F465}
 DATASET_API_ADDR=${DATASET_API_ADDR:-localhost:22000}
 DATASET_API_AUTH_TOKEN=${DATASET_API_AUTH_TOKEN:-$IMPORT_API_AUTH_TOKEN}
+FILTER_API_ADDR=${FILTER_API_ADDR:-localhost:22100}
+FILTER_API_AUTH_TOKEN=${FILTER_API_AUTH_TOKEN:-$IMPORT_API_AUTH_TOKEN}
 RECIPE_API_ADDR=${RECIPE_API_ADDR:-localhost:22300}
 ONS_DP_SRC_ROOT=${ONS_DP_SRC_ROOT:-$HOME/go/src/github.com/ONSdigital}
 
@@ -101,8 +105,10 @@ s3_file='s3://dp-dimension-extractor/EXAMPLE_V4-coicopcomb-inc-geo-code.csv'
 
 #       create_json='{"recipe":"v4","state":"created","files":[{"alias_name":"v4","url":"s3://dp-publish-content-test/OCIGrowth.csv"}]}'
 #       create_json='{"recipe":"v4","files":[{"alias_name":"v4","url":"s3://dp-publish-content-test/OCIGrowth.csv"}]}'
-# XXX magic b944be78-f56d-409b-9ebd-ab2b77ffe187 for the import-api to send direct to dimension-extractor
+# XXX magic XXX         b944be78-f56d-409b-9ebd-ab2b77ffe187 for the import-api to send direct to dimension-extractor
 create_json='{"recipe":"b944be78-f56d-409b-9ebd-ab2b77ffe187","files":[{"alias_name":"v4","url":"'"$s3_file"'"}]}'
+
+create_filt_json='{"instance_id":"<iid>"}'
 
 #       submit_json='{"id":"<job_id>","state":"submitted"}'
 submit_json='{"state":"submitted"}'
@@ -110,7 +116,16 @@ assoc_json='{"state":"associated","collection_id":"95c4669b-3ae9-4ba7-b690-87e89
 
 add_file_json='{"alias_name":"v4-2","url":"'"$s3_file"'_22"}'
 
-auth_curl_w_json_cmd="curl -sSH \"Content-type: application/json\" -H \"Internal-token: $IMPORT_API_AUTH_TOKEN\""
+curly_put (){ curly -X PUT  "$@";}
+curly_post(){ curly -X POST "$@";}
+curly(){
+        local token=$IMPORT_API_AUTH_TOKEN
+        if   [[ ${@:$#} =~ $DATASET_API_ADDR* ]]; then token=$DATASET_API_AUTH_TOKEN
+        elif [[ ${@:$#} =~ $FILTER_API_ADDR*  ]]; then token=$FILTER_API_AUTH_TOKEN
+        elif [[ ${@:$#} =~ $RECIPE_API_ADDR*  ]]; then token=$RECIPE_API_AUTH_TOKEN
+        fi
+        curl -sSH "Content-type: application/json" -H "Internal-Token: $token" "$@"
+}
 
 show_r_js="function show_(r){if(r==null){print('');return;};if(r.hasNext != undefined){while(r.hasNext()){printjson(r.next());}}else{printjson(r)}}"
 ppj_js="function p(r){print(r);};function pj(r){printjson(r)}"
@@ -183,28 +198,51 @@ create() {
         g_info "New import job... " >&2
         echo $create_json|jq .
         yorn POST above to API $IMPORT_API_ADDR/jobs || return
-        local json= out=$(eval $auth_curl_w_json_cmd -i -X POST -d \'"$create_json"\' $IMPORT_API_ADDR/jobs)
+        local json= out=$(curly_post -id "$create_json" $IMPORT_API_ADDR/jobs)
         get_json "$out"
         if [[ -n $legacy ]]; then
                 instance_id=$(echo "$json" | jq -r '.instances[0].id')
         else
-                # g_warn out="${out//}"
                 instance_id=$(echo "$json" | jq -r '.links.instances[0].id')
-                #works: echo "$json" | jq -r '.Links.instances[0].id'
                 [[ $instance_id == null ]] && instance_id=
         fi
         g_warn "i_id=:$instance_id:"
         [[ -n $instance_id ]] && inst $instance_id
 }
 
+create_filt() {
+        local instance_id=$(like_to_id instance "$1"); shift
+        local create_filt_json_iid=${create_filt_json//<iid>/$instance_id}
+        echo $create_filt_json_iid|jq .
+        yorn "Create filter job... send above: POST $FILTER_API_ADDR/filters" || return
+        local json= out=$(curly_post -id "$create_filt_json_iid" $FILTER_API_ADDR/filters)
+        get_json "$out"
+        # instance_id=$(echo "$json" | jq -r '.links.instances[0].id')
+        # [[ $instance_id == null ]] && instance_id=
+        # g_warn "i_id=:$instance_id:"
+        # [[ -n $instance_id ]] && inst $instance_id
+}
+create_filt_opt() {
+        local filt_id=$(like_to_id filter "$1"); shift
+        local json= out=$(curly_post -id "$create_filt_json_iid" $FILTER_API_ADDR/filters)
+        get_json "$out"
+}
+
 gen_url(){
         local sub_url=$1; shift
         if [[ $sub_url != */* ]]; then
-                if   [[ :instances:datasets:dimensions:editions:versions:contacts: == *:$sub_url:* ]]; then
+                if   [[ :filters:instances:datasets:dimensions:editions:versions:contacts: == *:$sub_url:* ]]; then
                         local next_uri= # colon-separated and -terminated
                         if   [[ :datasets: == *:$sub_url:* && -n $1 ]]; then
                                 next_uri=$sub_url:editions:versions:dimensions:
                                 sub_url=$DATASET_API_ADDR
+                        elif [[ $sub_url == filters ]]; then
+                                if [[ -n $1 ]]; then
+                                        next_uri=$sub_url:dimensions:options:
+                                        sub_url=$FILTER_API_ADDR
+                                else
+                                        sub_url=$FILTER_API_ADDR/$sub_url
+                                fi
                         else
                                 sub_url=$DATASET_API_ADDR/$sub_url
                         fi
@@ -215,7 +253,7 @@ gen_url(){
                                 shift
                         done
                 elif [[ $sub_url == recipes ]]; then
-                        sub_url=$RECIPE_API_ADDR/$sub_url;
+                        sub_url=$RECIPE_API_ADDR/$sub_url
                 else
                         sub_url=$IMPORT_API_ADDR/$sub_url # default to ImportAPI
                 fi
@@ -223,8 +261,8 @@ gen_url(){
         [[ -n $1 ]] && sub_url=$sub_url/$1
         echo $sub_url
 }
-api_raw(){ local method=$1 url=$2; local out=$(eval $auth_curl_w_json_cmd -X $method $url); echo "$out"; }
-api_raw_hdrs(){ local method=$1 url=$2; local out=$(eval $auth_curl_w_json_cmd -i -X $method $url); echo "$out"; }
+api_raw(){      local method=$1 url=$2; local out=$(curly  -X $method $url); echo "$out"; }
+api_raw_hdrs(){ local method=$1 url=$2; local out=$(curly -iX $method $url); echo "$out"; }
 
 getter() {
         local db_type=$1 id_or_url=$2; shift 2
@@ -235,6 +273,7 @@ getter() {
 }
 inst() { local url=$1; shift; getter instance   $url | jq .; }
 dset() {                      getter dataset    "$@" | jq .; }
+filt() {                      getter filter     "$@" | jq .; }
 inst_to_job()  { getter instance "$@" | jq -r .links.job.id -; }
 inst_to_cols() { getter instance "$@" | jq -r .headers -; }
 inst_to_all()  { getter instance "$@" | perl -MJSON -E '{local $/; $h=decode_json <>; $col=0; for my $h (@{ $hash->{headers} }){ $col++; if ($col==1) { $x=($h =~ s/V4_//r); say "$col\tx=$x\t$h" if 0; next; } if ($col<=$skip) { say "$col\tskip\y$h" if 0; next; } say $h if ($col-$x)%2; } }'; }
@@ -245,18 +284,18 @@ jobs_(){ local url=$1; shift; getter job $url | jq .; }
 recipe() { local url=$1; shift; getter recipe $url | jq .; }
 
 submit(){ local url=$1; shift; url=$(like_to_id job $url); url=$(gen_url jobs $url); g_info "Submitting import (state=>submitted): PUT $url " >&2
-        local out=$(eval $auth_curl_w_json_cmd -i -X PUT -d \'"$submit_json"\' $url)
+        local out=$(curly_put -id "$submit_json" $url)
         get_json "$out"
 }
 
 assoc(){ local url=$1; shift; url=$(like_to_id dataset $url); url=$(gen_url datasets $url "$@"); g_info "Associating dataset (state=>associated): PUT $url " >&2
-        local out=$(eval $auth_curl_w_json_cmd -i -X PUT -d \'"$assoc_json"\' $url)
+        local out=$(curly_put -id "$assoc_json" $url)
         get_json "$out"
 }
 
 add_file(){ local url=$1; shift; url=$(like_to_id job $url); url=$(gen_url jobs $url)/files; g_info "Adding file: PUT $url" >&2
         echo "$add_file_json" | jq .
-        local out=$(eval $auth_curl_w_json_cmd -i -X PUT -d \'"$add_file_json"\' $url)
+        local out=$(curly_put -id "$add_file_json" $url)
         get_json "$out"
 }
 
@@ -267,7 +306,7 @@ get_json(){
         echo "$json" | jq .
 }
 states(){ local url= otype=$1 states=$2; shift 2; url=$(gen_url $otype)\?state=$states; g_info "Getting $otype: GET $url" >&2
-        local out=$(eval $auth_curl_w_json_cmd -i "$url")
+        local out=$(curly -i "$url")
         get_json "$out"
 }
 
@@ -291,7 +330,11 @@ like_to_id() {
                 api_raw GET $RECIPE_API_ADDR/recipes | jq -r '.items[0].id'
         elif [[ :dataset: == *:$1:* ]]; then
                 do_mongo_datasets "db.getCollection('$mongo_datasets_c').findOne({_id:/^$2/}, {_id:1})" | jq -r ._id
+        elif [[ :filter: == *:$1:* ]]; then
+                # do_mongo_datasets "db.getCollection('$mongo_filter_c').findOne({_id:/^$2/}, {_id:1})" | jq -r ._id
+                psql -U dp $filter_db_name -Atc "SELECT ${1}JobId FROM ${1}s WHERE ${1}JobId LIKE '$2%'"
         elif [[ :instance: == *:$1:* ]]; then
+                g_warn iid=$2
                 do_mongo_datasets "db.getCollection('$mongo_instances_c').findOne({id:/^$2/}, {id:1})" | jq -r .id
         else # job
                 # 'print(JSON.stringify(db.s3.getIndexes(), null, 8),JSON.stringify(db.meta.getIndexes(), null, 8))'
@@ -364,14 +407,12 @@ db     (){ mongo_all "$@";  pg_all;  neo_all; }
 db_wipe(){ mongo_wipe; pg_wipe; neo_wipe; }
 tester() { do_mongo_imports "db.getCollection('$mongo_imports_c').find({id:/^$1/}, {id:1})"; }
 #tester() { like_to_id job 1d; }
-health(){ for i in $IMPORT_API_ADDR $DATASET_API_ADDR $RECIPE_API_ADDR; do yorn --x api_raw_hdrs GET $i/healthcheck; done; }
+health(){ for i in $IMPORT_API_ADDR $DATASET_API_ADDR $RECIPE_API_ADDR $FILTER_API_ADDR; do yorn --x api_raw_hdrs GET $i/healthcheck; done; }
 ok(){ health "$@"; }
 
 do=$1; shift; do=${do#--}
-if   [[ $do == create        ]]; then $do
-elif [[ $do == job           ]]; then jobs_ "$@"
-elif [[ $do == jobs          ]]; then jobs_ "$@"
-elif [[ $do == test          ]]; then
+if   [[ :job:jobs: == *:$do:* ]]; then jobs_ "$@"
+elif [[ $do == test           ]]; then
         eval $mongo_cmd $mongo_imports_db --eval \""db.getCollection('$mongo_imports_c').find()"\"
 elif [[ :submitted:created: == *:$do:* ]]; then
         states jobs $do "$@"
@@ -380,8 +421,8 @@ elif [[ :submitted:created: == *:$do:* ]]; then
         states recipes $do "$@"
 elif [[ :associated:published: == *:$do:* ]]; then
         states datasets $do "$@"
-elif [[ :tester:inst:inst_to_job:inst_to_cols:inst_to_dims:inst_to_col1:inst_like:job_to_file: == *:$do:* \
-            || :dset:assoc: == *:$do:* \
+elif [[ :create:tester:inst:inst_to_job:inst_to_cols:inst_to_dims:inst_to_col1:inst_like:job_to_file: == *:$do:* \
+            || :dset:assoc:filt:create_filt:create_filt_opt: == *:$do:* \
             || :tot_ob:db_ins_ob:ins_ob:submit:db_wipe:db:dim_x:neo:neo_count:neo_nodes:cypher_obs:mongo_all:mongo_wipe: == *:$do:* \
             || :add_file:health:ok:recipe: == *:$do:* ]]; then
         $do "$@"
