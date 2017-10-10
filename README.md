@@ -3,13 +3,17 @@ dp-import
 
 ### Getting started
 
+#### Required dependencies
+ 
+- [Kafka 0.10.2.1](https://www.apache.org/dyn/closer.cgi?path=/kafka/0.10.2.1/kafka_2.11-0.10.2.1.tgz)
+
 #### Import frontend
  - https://github.com/ONSdigital/dp-frontend-router `make debug`
  - https://github.com/ONSdigital/dp-frontend-dataset-controller `make debug`
  - https://github.com/ONSdigital/dp-frontend-filter-dataset-controller `make debug`
  - https://github.com/ONSdigital/zebedee `./run.sh` (run-reader on web)
  - https://github.com/ONSdigital/babbage `./run.sh`
- - sixteens `./run.sh`
+ - https://github.com/ONSdigital/sixteens `./run.sh`
  - https://github.com/ONSdigital/florence `make debug`
 
 #### Import backend
