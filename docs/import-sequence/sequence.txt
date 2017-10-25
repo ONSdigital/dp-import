@@ -1,0 +1,51 @@
+title CMD Dataset Import
+
+autonumber
+
+Florence->Recipe-API: GET Recipe(name)
+
+Florence->Import-API: POST /jobs - CreateImportJob(recipe)
+
+note over Import-API: Creates an instance for each output in the recipe
+
+Import-API->Dataset-API: CreateInstances()
+
+Florence->AWS-S3: UploadV4File
+
+Florence->Import-API:PUT File URL
+
+Florence->Import-API: POST /jobs/{id} - UpdateJobState("submitted")
+
+note over Import-API: Starts Kafka driven import pipeline
+
+note over Import-Tracker:Polls for new jobs that need tracking
+Import-Tracker->Import-API:GET /jobs
+
+
+Import-API->>Dimension-Extractor:NewImportJob
+
+Dimension-Extractor->AWS-S3:GetV4File
+
+note over Dimension-Extractor:Store each dimension option in Dataset-API instead of sending directly to the importer
+Dimension-Extractor->Dataset-API:POST dimension options
+
+Dimension-Extractor->>Dimension-Importer:Dimensions Extracted
+
+note over Dimension-Importer:Retrieves the stored dimension options
+Dimension-Importer->Dataset-API:GET dimensions
+
+Dimension-Importer->>Observation-Extractor:Dimensions Imported
+
+Observation-Extractor->AWS-S3:GetV4File
+
+note over Observation-Extractor:Send each observation in a seperate message
+Observation-Extractor->>Observation-Importer:ImportObservation
+
+Observation-Importer->Import-Tracker:ObservationsInserted
+
+note over Import-Tracker:Maintains a count of inserted observations
+note over Import-Tracker:When the expected number is met, double check against the DB
+
+Import-Tracker->Dataset-API:SetInstanceState("Complete")
+
+Import-Tracker->Import-API:SetJobState("Complete")
