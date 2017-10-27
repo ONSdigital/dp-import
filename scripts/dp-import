@@ -14,6 +14,7 @@ ID arguments in the following can usually be abbreviated (save typing).
     jobs                    get a list of import-jobs from the ImportAPI
     inst      [$iid]        get an instance (or all instances) from the DatasetAPI
     filt      [$fid]        get a filter job (or all) from the FilterAPI
+    hier      $hid          get a hierarchy from the HierarchyAPI
 
     dset      [$dsid]                               get a dataset (or all datasets) from the DatasetAPI
     dset      $dsid [ $eid [ $vid [ $dimid ] ] ]    get a dataset/edition/version/dimension ('-' adds next sub-uri w/o id)
@@ -59,6 +60,8 @@ DATASET_API_ADDR=${DATASET_API_ADDR:-localhost:22000}
 DATASET_API_AUTH_TOKEN=${DATASET_API_AUTH_TOKEN:-$IMPORT_API_AUTH_TOKEN}
 FILTER_API_ADDR=${FILTER_API_ADDR:-localhost:22100}
 FILTER_API_AUTH_TOKEN=${FILTER_API_AUTH_TOKEN:-$IMPORT_API_AUTH_TOKEN}
+HIERARCHY_API_ADDR=${HIERARCHY_API_ADDR:-localhost:22600}
+HIERARCHY_API_AUTH_TOKEN=${HIERARCHY_API_AUTH_TOKEN:-$IMPORT_API_AUTH_TOKEN}
 RECIPE_API_ADDR=${RECIPE_API_ADDR:-localhost:22300}
 ONS_DP_SRC_ROOT=${ONS_DP_SRC_ROOT:-$HOME/go/src/github.com/ONSdigital}
 
@@ -120,9 +123,10 @@ curly_put (){ curly -X PUT  "$@";}
 curly_post(){ curly -X POST "$@";}
 curly(){
         local token=$IMPORT_API_AUTH_TOKEN
-        if   [[ ${@:$#} =~ $DATASET_API_ADDR* ]]; then token=$DATASET_API_AUTH_TOKEN
-        elif [[ ${@:$#} =~ $FILTER_API_ADDR*  ]]; then token=$FILTER_API_AUTH_TOKEN
-        elif [[ ${@:$#} =~ $RECIPE_API_ADDR*  ]]; then token=$RECIPE_API_AUTH_TOKEN
+        if   [[ ${@:$#} =~ $DATASET_API_ADDR*    ]]; then token=$DATASET_API_AUTH_TOKEN
+        elif [[ ${@:$#} =~ $FILTER_API_ADDR*     ]]; then token=$FILTER_API_AUTH_TOKEN
+        elif [[ ${@:$#} =~ $RECIPE_API_ADDR*     ]]; then token=$RECIPE_API_AUTH_TOKEN
+        elif [[ ${@:$#} =~ $HIERARCHY_API_ADDR*  ]]; then token=$HIERARCHY_API_AUTH_TOKEN
         fi
         curl -sSH "Content-type: application/json" -H "Internal-Token: $token" "$@"
 }
@@ -230,12 +234,16 @@ create_filt_opt() {
 
 gen_url(){
         local sub_url=$1; shift
+        [[ $sub_url = hierarchys ]] && sub_url=hierarchies
         if [[ $sub_url != */* ]]; then
-                if   [[ :filters:instances:datasets:dimensions:editions:versions:contacts: == *:$sub_url:* ]]; then
+                if   [[ :filters:instances:datasets:dimensions:editions:versions:contacts:hierarchies: == *:$sub_url:* ]]; then
                         local next_uri= # colon-separated and -terminated
                         if   [[ :datasets: == *:$sub_url:* && -n $1 ]]; then
                                 next_uri=$sub_url:editions:versions:dimensions:
                                 sub_url=$DATASET_API_ADDR
+                        elif [[ :hierarchies: == *:$sub_url:* ]]; then
+                                next_uri=$sub_url:__:__:__
+                                sub_url=$HIERARCHY_API_ADDR
                         elif [[ $sub_url == filters ]]; then
                                 if [[ -n $1 ]]; then
                                         next_uri=$sub_url:dimensions:options:
@@ -248,6 +256,7 @@ gen_url(){
                         fi
                         while [[ -n $next_uri && -n $1 ]]; do
                                 sub_url=$sub_url/${next_uri%%:*}
+                                sub_url=${sub_url%/__*} # remove trailing "/__level1"
                                 next_uri=${next_uri#*:}
                                 [[ $1 != '-' ]] && sub_url=$sub_url/$1
                                 shift
@@ -273,6 +282,7 @@ getter() {
 }
 inst() { local url=$1; shift; getter instance   $url | jq .; }
 dset() {                      getter dataset    "$@" | jq .; }
+hier() {                      getter hierarchy  "$@" | jq .; }
 filt() {                      getter filter     "$@" | jq .; }
 inst_to_job()  { getter instance "$@" | jq -r .links.job.id -; }
 inst_to_cols() { getter instance "$@" | jq -r .headers -; }
@@ -336,6 +346,9 @@ like_to_id() {
         elif [[ :instance: == *:$1:* ]]; then
                 g_warn iid=$2
                 do_mongo_datasets "db.getCollection('$mongo_instances_c').findOne({id:/^$2/}, {id:1})" | jq -r .id
+        elif [[ :hierarchy: == *:$1:* ]]; then
+                echo $2
+                return
         else # job
                 # 'print(JSON.stringify(db.s3.getIndexes(), null, 8),JSON.stringify(db.meta.getIndexes(), null, 8))'
                 # echo do_mongo_imports "db.getCollection('$mongo_imports_c').find({id:/^$2/}, {id:1})"
@@ -407,7 +420,7 @@ db     (){ mongo_all "$@";  pg_all;  neo_all; }
 db_wipe(){ mongo_wipe; pg_wipe; neo_wipe; }
 tester() { do_mongo_imports "db.getCollection('$mongo_imports_c').find({id:/^$1/}, {id:1})"; }
 #tester() { like_to_id job 1d; }
-health(){ for i in $IMPORT_API_ADDR $DATASET_API_ADDR $RECIPE_API_ADDR $FILTER_API_ADDR; do yorn --x api_raw_hdrs GET $i/healthcheck; done; }
+health(){ for i in $IMPORT_API_ADDR $DATASET_API_ADDR $RECIPE_API_ADDR $FILTER_API_ADDR $HIERARCHY_API_ADDR; do yorn --x api_raw_hdrs GET $i/healthcheck; done; }
 ok(){ health "$@"; }
 
 do=$1; shift; do=${do#--}
@@ -422,7 +435,7 @@ elif [[ :submitted:created: == *:$do:* ]]; then
 elif [[ :associated:published: == *:$do:* ]]; then
         states datasets $do "$@"
 elif [[ :create:tester:inst:inst_to_job:inst_to_cols:inst_to_dims:inst_to_col1:inst_like:job_to_file: == *:$do:* \
-            || :dset:assoc:filt:create_filt:create_filt_opt: == *:$do:* \
+            || :dset:assoc:filt:create_filt:create_filt_opt:hier: == *:$do:* \
             || :tot_ob:db_ins_ob:ins_ob:submit:db_wipe:db:dim_x:neo:neo_count:neo_nodes:cypher_obs:mongo_all:mongo_wipe: == *:$do:* \
             || :add_file:health:ok:recipe: == *:$do:* ]]; then
         $do "$@"

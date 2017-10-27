@@ -1,9 +1,9 @@
 #!/bin/false dotme
 
-g_colr() { local col=$1 recurse= rst=$'\e[0m'; shift  # '[-r] bright_white_on_red' WHITE_on_red -- all valid
+g_colr() { local col=$1 recurse= rst=$'\e[0m'; shift  # '[-r] bright_white_on_red' WHITE_on_red bold -- all valid
+    if [[ $col == -r ]]; then recurse=1; col=$1; shift; fi
     if [[ -t 0 ]]; then
-        if [[ $col == -r ]]; then recurse=1; col=$1; shift; fi
-        col=$'\e['$(perl -E '$_="";$c=shift @ARGV;%c=(black=>30,red=>31,green=>32,yellow=>33,blue=>34,magenta=>35,cyan=>36,white=>37,reset=>0);$_="1;" if $c =~ /^[A-Z]/ and $c=lc $c or $c =~ s/^bright_//;$_.=10+$c{$1}.";" if $c =~ s/_on_(\w+)$// and defined $c{$1};if(defined $c{$c}){$_.=$c{$c}}else{$_=$c}say' $col)m
+        col=$'\e['$(perl -E '$_="";$c=shift @ARGV;%c=(bold=>1,black=>30,red=>31,green=>32,yellow=>33,blue=>34,magenta=>35,cyan=>36,white=>37,reset=>0);$_="1;" if $c =~ /^[A-Z]/ and $c=lc $c or $c =~ s/^bright_//;$_.=10+$c{$1}.";" if $c =~ s/_on_(\w+)$// and defined $c{$1};if(defined $c{$c}){$_.=$c{$c}}else{$_=$c}say' $col)m
         if [[ -n $recurse ]]; then set -- "${@//$rst/$col}"; fi
         echo -e "$col""$@""$rst"
     else
@@ -49,7 +49,7 @@ yorn() {
 	local quit_to= def=yn g_all=a do_it= res= cont= comment= cont_ok=
 	while [[ $1 == --* ]]; do
 		if   [[ $1 == --           ]]; then shift; break
-		elif [[ $1 == --comment    ]]; then comment=$(g_colr yellow "$2 "); shift
+		elif [[ $1 == --comment    ]]; then comment=$(g_colr -r yellow "$2 "); shift
 		elif [[ $1 == --cont       ]]; then cont=y
 		elif [[ $1 == --no         ]]; then def=ny
 		elif [[ $1 == --x          ]]; then do_it=1
