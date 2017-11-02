@@ -20,6 +20,8 @@ ID arguments in the following can usually be abbreviated (save typing).
     dset      $dsid [ $eid [ $vid [ $dimid ] ] ]    get a dataset/edition/version/dimension ('-' adds next sub-uri w/o id)
     assoc     $dsid $eid $vid                       change a dataset state=associated on the DatasetAPI
 
+    clist     [$clid]                               get a code-list (or all code-lists) from the CodelistAPI
+
     submitted               state-filtered: import-jobs<ImportAPI; datasets,instances<DatasetAPI; recipes<RecipeAPI
     created                 as per 'submitted'
     associated|published    as per 'submitted', only checks datasets
@@ -62,6 +64,8 @@ FILTER_API_ADDR=${FILTER_API_ADDR:-localhost:22100}
 FILTER_API_AUTH_TOKEN=${FILTER_API_AUTH_TOKEN:-$IMPORT_API_AUTH_TOKEN}
 HIERARCHY_API_ADDR=${HIERARCHY_API_ADDR:-localhost:22600}
 HIERARCHY_API_AUTH_TOKEN=${HIERARCHY_API_AUTH_TOKEN:-$IMPORT_API_AUTH_TOKEN}
+CODELIST_API_ADDR=${CODELIST_API_ADDR:-localhost:22400}
+CODELIST_API_AUTH_TOKEN=${CODELIST_API_AUTH_TOKEN:-$IMPORT_API_AUTH_TOKEN}
 RECIPE_API_ADDR=${RECIPE_API_ADDR:-localhost:22300}
 ONS_DP_SRC_ROOT=${ONS_DP_SRC_ROOT:-$HOME/go/src/github.com/ONSdigital}
 
@@ -72,9 +76,10 @@ filter_api_dir=$ONS_DP_SRC_ROOT/dp-filter-api
 
 # postgres (now unused, but see $legacy)
 import_db_name=ImportJobs
-filter_db_name=FilterJobs
-# set this non-empty if using postgres (blank => mongo)
+# set this non-empty if using postgres for above (blank => mongo)
 legacy=
+# used until 31/10/2017
+filter_db_name=FilterJobs
 
 # neo4j
 cypher_client=neo4j-client
@@ -95,8 +100,21 @@ mongo_editions_db=$mongo_datasets_db
 mongo_editions_c=editions
 mongo_versions_db=$mongo_datasets_db
 mongo_versions_c=versions
+mongo_filters_c=filters
+mongo_filters_db=$mongo_datasets_db
 mongo_cmd="mongo --quiet"
-mongo_js='var all={"imports":{"db":"'"$mongo_imports_db"'","coll":"'"$mongo_imports_c"'"},"instances":{"db":"'"$mongo_instances_db"'","coll":"'"$mongo_instances_c"'"},"datasets":{"db":"'"$mongo_datasets_db"'","coll":"'"$mongo_datasets_c"'"},"dimensions":{"db":"'"$mongo_dimensions_db"'","coll":"'"$mongo_dimensions_c"'"},"editions":{"db":"'"$mongo_editions_db"'","coll":"'"$mongo_editions_c"'"},"versions":{"db":"'"$mongo_versions_db"'","coll":"'"$mongo_versions_c"'"}}'
+mongo_js=$(cat <<EOFjs
+var all={
+    "imports":      {"db":"$mongo_imports_db",    "coll":"$mongo_imports_c"},
+    "instances":    {"db":"$mongo_instances_db",  "coll":"$mongo_instances_c"},
+    "datasets":     {"db":"$mongo_datasets_db",   "coll":"$mongo_datasets_c"},
+    "dimensions":   {"db":"$mongo_dimensions_db", "coll":"$mongo_dimensions_c"},
+    "editions":     {"db":"$mongo_editions_db",   "coll":"$mongo_editions_c"},
+    "versions":     {"db":"$mongo_versions_db",   "coll":"$mongo_versions_c"},
+    "filters":      {"db":"$mongo_filters_db",    "coll":"$mongo_filters_c"}
+}
+EOFjs
+)
 
 # s3_file='s3://dp-dimension-extractor/OCIGrowth.csv'
 # s3_file='s3://dp-dimension-extractor/EXAMPLE_V4-coicopcomb.csv'
@@ -127,6 +145,7 @@ curly(){
         elif [[ ${@:$#} =~ $FILTER_API_ADDR*     ]]; then token=$FILTER_API_AUTH_TOKEN
         elif [[ ${@:$#} =~ $RECIPE_API_ADDR*     ]]; then token=$RECIPE_API_AUTH_TOKEN
         elif [[ ${@:$#} =~ $HIERARCHY_API_ADDR*  ]]; then token=$HIERARCHY_API_AUTH_TOKEN
+        elif [[ ${@:$#} =~ $CODELIST_API_ADDR*   ]]; then token=$CODELIST_API_AUTH_TOKEN
         fi
         curl -sSH "Content-type: application/json" -H "Internal-Token: $token" "$@"
 }
@@ -236,7 +255,7 @@ gen_url(){
         local sub_url=$1; shift
         [[ $sub_url = hierarchys ]] && sub_url=hierarchies
         if [[ $sub_url != */* ]]; then
-                if   [[ :filters:instances:datasets:dimensions:editions:versions:contacts:hierarchies: == *:$sub_url:* ]]; then
+                if   [[ :filters:instances:datasets:dimensions:editions:versions:contacts:hierarchies:code-lists: == *:$sub_url:* ]]; then
                         local next_uri= # colon-separated and -terminated
                         if   [[ :datasets: == *:$sub_url:* && -n $1 ]]; then
                                 next_uri=$sub_url:editions:versions:dimensions:
@@ -251,6 +270,9 @@ gen_url(){
                                 else
                                         sub_url=$FILTER_API_ADDR/$sub_url
                                 fi
+                        elif [[ :code-lists: == *:$sub_url:* ]]; then
+                                next_uri=$sub_url:codes:
+                                sub_url=$CODELIST_API_ADDR
                         else
                                 sub_url=$DATASET_API_ADDR/$sub_url
                         fi
@@ -280,10 +302,11 @@ getter() {
         g_info "Getting ${db_type} info... $id_or_url " >&2
         api_raw GET $id_or_url
 }
-inst() { local url=$1; shift; getter instance   $url | jq .; }
-dset() {                      getter dataset    "$@" | jq .; }
-hier() {                      getter hierarchy  "$@" | jq .; }
-filt() {                      getter filter     "$@" | jq .; }
+inst()  { local url=$1; shift; getter instance   $url | jq .; }
+dset()  {                      getter dataset    "$@" | jq .; }
+hier()  {                      getter hierarchy  "$@" | jq .; }
+filt()  {                      getter filter     "$@" | jq .; }
+clist() {                      getter code-list  "$@" | jq .; }
 inst_to_job()  { getter instance "$@" | jq -r .links.job.id -; }
 inst_to_cols() { getter instance "$@" | jq -r .headers -; }
 inst_to_all()  { getter instance "$@" | perl -MJSON -E '{local $/; $h=decode_json <>; $col=0; for my $h (@{ $hash->{headers} }){ $col++; if ($col==1) { $x=($h =~ s/V4_//r); say "$col\tx=$x\t$h" if 0; next; } if ($col<=$skip) { say "$col\tskip\y$h" if 0; next; } say $h if ($col-$x)%2; } }'; }
@@ -341,12 +364,12 @@ like_to_id() {
         elif [[ :dataset: == *:$1:* ]]; then
                 do_mongo_datasets "db.getCollection('$mongo_datasets_c').findOne({_id:/^$2/}, {_id:1})" | jq -r ._id
         elif [[ :filter: == *:$1:* ]]; then
-                # do_mongo_datasets "db.getCollection('$mongo_filter_c').findOne({_id:/^$2/}, {_id:1})" | jq -r ._id
-                psql -U dp $filter_db_name -Atc "SELECT ${1}JobId FROM ${1}s WHERE ${1}JobId LIKE '$2%'"
+                do_mongo_datasets "db.getCollection('$mongo_filters_c').findOne({_id:/^$2/}, {_id:1})" | jq -r ._id
+                # psql -U dp $filter_db_name -Atc "SELECT ${1}JobId FROM ${1}s WHERE ${1}JobId LIKE '$2%'"
         elif [[ :instance: == *:$1:* ]]; then
                 g_warn iid=$2
                 do_mongo_datasets "db.getCollection('$mongo_instances_c').findOne({id:/^$2/}, {id:1})" | jq -r .id
-        elif [[ :hierarchy: == *:$1:* ]]; then
+        elif [[ :hierarchy:code-list: == *:$1:* ]]; then
                 echo $2
                 return
         else # job
@@ -396,12 +419,12 @@ ins_ob(){ avro $1 --topic import-observations-inserted --inserts $2; }
 list_db(){ node -e "$mongo_js;for(db in all){ console.log(db); }"; }
 pg_all() {
     if   [[ -n $legacy ]]; then yorn --x psql -U dp $import_db_name -c 'SELECT * FROM jobs;'    -c 'SELECT * FROM instances;' -c 'SELECT * FROM dimensions;' -c 'SELECT COUNT(*) FROM dimensions;'
-    else                        yorn --x psql -U dp $filter_db_name -c 'SELECT * FROM filters;' -c 'SELECT * FROM downloads;' -c 'SELECT * FROM dimensions;' -c 'SELECT COUNT(*) FROM dimensions;'
+    elif [[ -n $nopeXX ]]; then yorn --x psql -U dp $filter_db_name -c 'SELECT * FROM filters;' -c 'SELECT * FROM downloads;' -c 'SELECT * FROM dimensions;' -c 'SELECT COUNT(*) FROM dimensions;'
     fi
 }
 pg_wipe()   {
     if   [[ -n $legacy ]]; then yorn --x psql -U dp $import_db_name -f $import_api_dir/scripts/InitDatabase.sql
-    else                        yorn --x psql -U dp $filter_db_name -f $filter_api_dir/scripts/InitDatabase.sql
+    elif [[ -n $nopeXX ]]; then yorn --x psql -U dp $filter_db_name -f $filter_api_dir/scripts/InitDatabase.sql
     fi
 }
 # mongo_all_old (){ yorn --x do_mongo_r "db=db.getSiblingDB('$mongo_imports_db');p('coll $mongo_imports_c');r=db.getCollection('$mongo_imports_c').find();show_(r);db=db.getSiblingDB('$mongo_datasets_db');p('coll $mongo_instances_c');r=db.getCollection('$mongo_instances_c').find();show_(r)"; }
@@ -435,7 +458,7 @@ elif [[ :submitted:created: == *:$do:* ]]; then
 elif [[ :associated:published: == *:$do:* ]]; then
         states datasets $do "$@"
 elif [[ :create:tester:inst:inst_to_job:inst_to_cols:inst_to_dims:inst_to_col1:inst_like:job_to_file: == *:$do:* \
-            || :dset:assoc:filt:create_filt:create_filt_opt:hier: == *:$do:* \
+            || :dset:assoc:filt:create_filt:create_filt_opt:hier:clist: == *:$do:* \
             || :tot_ob:db_ins_ob:ins_ob:submit:db_wipe:db:dim_x:neo:neo_count:neo_nodes:cypher_obs:mongo_all:mongo_wipe: == *:$do:* \
             || :add_file:health:ok:recipe: == *:$do:* ]]; then
         $do "$@"
