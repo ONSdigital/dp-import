@@ -286,6 +286,7 @@ gen_url(){
                 elif [[ $sub_url == recipes ]]; then
                         sub_url=$RECIPE_API_ADDR/$sub_url
                 else
+                        # sub_url = jobs,instances
                         sub_url=$IMPORT_API_ADDR/$sub_url # default to ImportAPI
                 fi
         fi
