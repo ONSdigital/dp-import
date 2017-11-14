@@ -157,6 +157,19 @@ For filtering hierarchical dimensions, ensure you have created the hierarchy for
 
 ### Admin
 
+#### Clear MongoDB
+
+The following will drop the datasets and imports databases. Add further databases as required.
+
+```
+ mongo mongodb://localhost:27017 <<EOF
+ use datasets
+ db.dropDatabase();
+ use imports
+ db.dropDatabase();
+EOF
+```
+
 #### Clear neo4j
 ```
 brew services stop neo4j
