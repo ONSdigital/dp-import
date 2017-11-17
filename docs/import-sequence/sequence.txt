@@ -21,7 +21,6 @@ note over Import-API: Starts Kafka driven import pipeline
 note over Import-Tracker:Polls for new jobs that need tracking
 Import-Tracker->Import-API:GET /jobs
 
-
 Import-API->>Dimension-Extractor:NewImportJob
 
 Dimension-Extractor->AWS-S3:GetV4File
@@ -32,6 +31,9 @@ Dimension-Extractor->Dataset-API:POST dimension options
 Dimension-Extractor->>Dimension-Importer:Dimensions Extracted
 
 note over Dimension-Importer:Retrieves the stored dimension options
+
+note over Dimension-Importer:Stores dimension options in Neo4j
+
 Dimension-Importer->Dataset-API:GET dimensions
 
 Dimension-Importer->>Observation-Extractor:Dimensions Imported
@@ -39,7 +41,10 @@ Dimension-Importer->>Observation-Extractor:Dimensions Imported
 Observation-Extractor->AWS-S3:GetV4File
 
 note over Observation-Extractor:Send each observation in a seperate message
-Observation-Extractor->>Observation-Importer:ImportObservation
+
+Observation-Extractor->>Observation-Importer:ObservationExtracted
+
+note over Observation-Importer:Store observations in Neo4j
 
 Observation-Importer->Import-Tracker:ObservationsInserted
 

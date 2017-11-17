@@ -48,13 +48,127 @@ that will run all of the services for you. If you do want to run services indepe
 
 ### Import a dataset
 
-Navigate to `http://localhost:8081/florence/datasets/`
- - upload a file
 
-Get instance data from the import API:
-```curl localhost:21800/instances/284ca658-bfcf-4886-adc6-a43c4c040ad4 | jq .```
+Ensure a dataset exists on the dataset API for the dataset specified in the recipe being used.
+The current stubbed recipe api specifies dataset ID 931a8a2a-0dc8-42b6-a884-7b6054ed3b68 for the CPI dataset recipe.
+
+```
+curl --header 'internal-token:FD0108EA-825D-411C-9B1D-41EF7727F465' http://localhost:22000/datasets/931a8a2a-0dc8-42b6-a884-7b6054ed3b68
+```
+
+If not then create one (already set to published):
+```
+curl -X POST -d '{"release_frequency":"yearly", "state": "published", "theme": "population", "title": "CPI" }' --header 'internal-token:FD0108EA-825D-411C-9B1D-41EF7727F465' http://localhost:22000/datasets/931a8a2a-0dc8-42b6-a884-7b6054ed3b68
+```
+
+#### Create instance
+
+Navigate to <http://localhost:8081/florence/datasets>
+ - upload a file
+ - select an edition
+ - click submit to publishing
+
+Get instance data from the import API - the instance state should be 'complete' if the import succeeded (copy the instance ID - it will be the last instance in the array):
+
+Example curl command to GET instances:
+```
+curl --header 'internal-token:FD0108EA-825D-411C-9B1D-41EF7727F465' http://localhost:22000/instances | jq
+```
+
+#### Set the release date and license values on the instance (replace the instance ID with the one you created).
+
+API call details:
+```
+PUT localhost:22000/instances/750102f4-2839-441f-b2e4-6cf99d26858a
+{
+	"release_date": "todayisfine",
+	"license": "todayisfine"
+}
+```
+
+Example curl command to PUT instance data:
+```
+curl -v -X PUT -d '{"release_date":"today", "license": "wut"}' --header 'internal-token:FD0108EA-825D-411C-9B1D-41EF7727F465' localhost:22000/instances/750102f4-2839-441f-b2e4-6cf99d26858a
+```
+
+#### Set the instance to 'edition-confirmed' (replace the instance ID with the one you created)
+
+This converts from an instance to a dataset version.
+
+API call details:
+```
+PUT localhost:22000/instances/750102f4-2839-441f-b2e4-6cf99d26858a
+{
+    "edition":"Time-series",
+    "state": "edition-confirmed"
+}
+```
+
+Example curl command to PUT instance state:
+```
+curl -v -X PUT -d '{"state":"edition-confirmed", "edition":"Time-series"}' --header 'internal-token:FD0108EA-825D-411C-9B1D-41EF7727F465' localhost:22000/instances/750102f4-2839-441f-b2e4-6cf99d26858a
+```
+
+#### Associate the dataset with a collection
+
+You will first need to get the dataset version URL from the instances endpoint
+
+Example curl command to GET instances:
+```
+curl --header 'internal-token:FD0108EA-825D-411C-9B1D-41EF7727F465' http://localhost:22000/instances | jq
+```
+
+Copy the link for the version URL to use in the following calls.
+
+API call details:
+```
+PUT http://localhost:22000/datasets/931a8a2a-0dc8-42b6-a884-7b6054ed3b68/editions/Time-series/versions/1
+{
+	"collection_id": "1234",
+	"state": "associated"
+}
+```
+
+Example curl command to PUT dataset version state / collection:
+```
+curl -v -X PUT -d '{"state":"associated", "collection_id":"123"}' --header 'internal-token:FD0108EA-825D-411C-9B1D-41EF7727F465' http://localhost:22000/datasets/931a8a2a-0dc8-42b6-a884-7b6054ed3b68/editions/Time-series/versions/1
+```
+
+#### Set dataset to published
+
+API call details:
+```
+PUT http://localhost:22000/datasets/931a8a2a-0dc8-42b6-a884-7b6054ed3b68/editions/Time-series/versions/1
+{
+	"state": "published"
+}
+```
+
+Example curl command to PUT dataset version state:
+```
+curl -v -X PUT -d '{"state":"published"}' --header 'internal-token:FD0108EA-825D-411C-9B1D-41EF7727F465' http://localhost:22000/datasets/931a8a2a-0dc8-42b6-a884-7b6054ed3b68/editions/Time-series/versions/1
+```
+
+#### Check dataset is available via the frontend
+
+You should now see the details of the dataset via the frontend by navigating to <http://localhost:20000/datasets/931a8a2a-0dc8-42b6-a884-7b6054ed3b68>
+
+For filtering hierarchical dimensions, ensure you have created the hierarchy for the instance as detailed here: <https://github.com/ONSdigital/dp-hierarchy-builder>
 
 ### Admin
+
+#### Clear MongoDB
+
+The following will drop the datasets and imports databases. Add further databases as required.
+
+```
+ mongo mongodb://localhost:27017 <<EOF
+ use datasets
+ db.dropDatabase();
+ use imports
+ db.dropDatabase();
+EOF
+```
 
 #### Clear neo4j
 ```
