@@ -5,7 +5,7 @@ and generating the necessary hierarchy data.
 
 
 ### Getting started
-git clone to you `GOPATH`
+git clone to your `GOPATH`
 ```bash
 git clone git@github.com:ONSdigital/dp-import.git
 ```
