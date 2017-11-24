@@ -9,6 +9,7 @@ import (
 	"github.com/ONSdigital/dp-dataset-api/models"
 	imodel "github.com/ONSdigital/dp-import-api/models"
 	"github.com/ONSdigital/dp-import/cmd-cli/config"
+	"github.com/ONSdigital/dp-import/cmd-cli/hierarchy"
 	"github.com/ONSdigital/dp-import/cmd-cli/requests"
 	"github.com/ONSdigital/go-ns/log"
 	bolt "github.com/johnnadratowski/golang-neo4j-bolt-driver"
@@ -122,6 +123,14 @@ func ImportDataset() {
 	body = makeRequest(requests.PublishDataset(instance.Links.Version.HRef), http.StatusOK)
 	displayResponse(body, &dataset, "PublishDataset")
 
+	if err := hierarchy.CreateFullHeirarchy(); err != nil {
+		exit(err)
+	}
+
+	if err := hierarchy.CreateInstanceHierarchy(instance.InstanceID); err != nil {
+		exit(err)
+	}
+
 	log.Info("import dataset completed successfully", log.Data{
 		"uri": cfg.PublishedDatasetURL(dataset.ID),
 	})
@@ -159,17 +168,14 @@ func DropDatabases() {
 	dbs, _ := sess.DatabaseNames()
 	log.Debug("databases", log.Data{"": dbs})
 
-	log.Debug("dropping imports", nil)
-	if err := sess.DB("imports").DropDatabase(); err != nil {
-		log.Error(err, nil)
+	for _, db := range []string{"imports", "datasets", "filters"} {
+		log.Info("dropping "+db, nil)
+		if err := sess.DB(db).DropDatabase(); err != nil {
+			log.Error(err, nil)
+		}
 	}
 
-	log.Debug("dropping datasets", nil)
-	if err := sess.DB("datasets").DropDatabase(); err != nil {
-		log.Error(err, nil)
-	}
-
-	log.Info("dropping neo4j databases", log.Data{"config": cfg})
+	log.Info("dropping neo4j database", nil)
 	pool, err := bolt.NewDriverPool(cfg.Neo4jURL, 1)
 	if err != nil {
 		exit(err)

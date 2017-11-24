@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding/json"
 	"fmt"
 	"github.com/ONSdigital/go-ns/log"
 	"gopkg.in/yaml.v2"
@@ -24,17 +25,22 @@ type Model struct {
 func Load() Model {
 	source, err := ioutil.ReadFile("config.yml")
 	if err != nil {
-		panic(err)
+		//panic(err)
 	}
 
 	var config Model
 	if err := yaml.Unmarshal(source, &config); err != nil {
-		panic(err)
+		//panic(err)
 	}
 
 	Config = config
-	log.Debug("cmd-cli configuration", log.Data{"": config})
+	log.Debug("cmd-cli configuration", log.Data{"": config.String()})
 	return config
+}
+
+func (c Model) String() string {
+	s, _ := json.MarshalIndent(&c, "", "    ")
+	return string(s)
 }
 
 func (c *Model) CreateDatasetURL(id string) string {
