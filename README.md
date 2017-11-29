@@ -68,7 +68,7 @@ Navigate to <http://localhost:8081/florence/datasets>
  - select an edition
  - click submit to publishing
 
-Get instance data from the import API - the instance state should be 'complete' if the import succeeded (copy the instance ID - it will be the last instance in the array):
+Get instance data from the import API - the instance state should be 'completed' if the import succeeded (copy the instance ID - it will be the last instance in the array):
 
 Example curl command to GET instances:
 ```
@@ -81,7 +81,7 @@ API call details:
 ```
 PUT localhost:22000/instances/750102f4-2839-441f-b2e4-6cf99d26858a
 {
-	"release_date": "todayisfine",
+	"release_date": "todayisfine"
 }
 ```
 
