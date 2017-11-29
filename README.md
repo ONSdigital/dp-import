@@ -140,9 +140,9 @@ curl -v -X PUT -d '{"state":"associated", "collection_id":"123"}' --header 'inte
 ```
 
 ##### Notes
-Once the version has been updated, the dataset resource is updated; the `next.collection_id`, `next.state` and `next.links` are all updated.
+Once the version has been updated then the dataset resource is also updated, this includes the following `next.collection_id`, `next.state` and `next.links` are all updated.
 
-It is possible to add a `collection_id` before changing the state to `associated`, two separate requests.
+It is possible to add a `collection_id` before changing the state to `associated` with two separate requests.
 If the `collection_id` is not set and a request is made to change the state to `associated` then the resource will fail to update.
 
 #### Set version and hence dataset to published
@@ -163,9 +163,6 @@ curl -v -X PUT -d '{"state":"published"}' --header 'internal-token:FD0108EA-825D
 ##### Notes
 Once the version has been updated with a state of `published`, then the edition is updated; this includes a change of state from `created` to `published` if the resource was not already published from a previous version and the `links.latest_version` is updated.
 Once the edition resource is successfully updated then the dataset resource is updated with a new state `published` on the next sub document and the next sub document is copied over to the current sub document.
-
-It is possible to add a `collection_id` before changing the state to `associated`, two separate requests.
-If the `collection_id` is not set and a request is made to change the state to `associated` then the resource will fail to update.
 
 #### Check dataset is available via the frontend
 
