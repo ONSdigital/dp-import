@@ -14,7 +14,8 @@ ID arguments in the following can usually be abbreviated (save typing).
     submit                    change an import-job to state:submitted on the ImportAPI
     job         $jid          get an import-job from the ImportAPI
     jobs                      get a list of import-jobs from the ImportAPI
-    inst        [$iid]        get an instance (or all instances) from the DatasetAPI
+    inst        [$iid] [-]    get an instance (or all instances) from the DatasetAPI, or GET /dimensions
+    inst_put    $iid $dim     put data to a dimension on an instance (DatasetAPI)
     filt        [$fid]        get a filter job (or all) from the FilterAPI
     hier        $hid          get a hierarchy from the HierarchyAPI
 
@@ -147,6 +148,7 @@ create_filt_json='{"instance_id":"<iid>"}'
 #   submit_json='{"state":"submitted"}'
 state_json='{"state":"__STATE__"}'
 assoc_json='{"state":"associated","collection_id":"95c4669b-3ae9-4ba7-b690-87e890a1c543"}'
+inst_dim_json='{"title":"__TITLE__"}'
 
 add_file_json='{"alias_name":"v4-2","url":"'"__s3_file__"'_22"}'
 
@@ -321,8 +323,12 @@ gen_url(){
                                 else
                                         sub_url=$CODELIST_API_ADDR/$sub_url
                                 fi
+                        elif [[ :instances: == *:$sub_url:* && -n $1 ]]; then
+                                # instance - dim args
+                                next_uri=$sub_url:dimensions:
+                                sub_url=$DATASET_API_ADDR
                         else
-                                # instance
+                                # instance - no args
                                 sub_url=$DATASET_API_ADDR/$sub_url
                         fi
                         while [[ -n $next_uri && -n $1 ]]; do
@@ -366,6 +372,15 @@ job_to_file() { getter job "$@" | jq -r '.files[0].url' -; }
 jobs_(){ local url=$1; shift; getter job $url | jq .; }
 recipe() { local url=$1; shift; getter recipe $url | jq .; }
 
+inst_put()  {
+        local url=$1 dim=$2; shift 2
+        url=$(like_to_id instance $url); url=$(gen_url instances $url $dim)
+        [[ -z $url ]] && g_die 2 No id found for inst
+        date_time=$(date '+%Y-%m-%d %H:%M:%S')
+        g_info2 "Submitting (title=>\"$dim $date_time\"): PUT $url"
+        local out=$(curly_put -id "${inst_dim_json/__TITLE__/$dim $date_time}" $url)
+        get_json "$out"
+}
 state_put() {
         local new_state=$1 o_url=$2 res=0; shift 2
         local poss_target="job instance"; if [[ $new_state == published ]]; then poss_target=dataset; fi
@@ -585,20 +600,20 @@ while [[ -n $do ]]; do
             twixt $? Assoc Publish
             state_put published $ver_url
             twixt $? Publish "Check dataset at: $ONS_DP_FE_ROUTER_URL/datasets/$def_dset_id"
-    elif [[ $do == test           ]]; then
+
+    elif [[ $do == test                                   ]]; then
             eval $mongo_cmd $mongo_imports_db --eval \""db.getCollection('$mongo_imports_c').find()"\"
-    elif [[ :complete: == *:$do:* ]]; then
+    elif [[ :complete: == *:$do:*                         ]]; then
             state_put completed "$@"
-    elif [[ :publish: == *:$do:* ]]; then
+    elif [[ :publish: == *:$do:*                          ]]; then
             state_put published "$@"
-    elif [[ :submitted:created:completed: == *:$do:* ]]; then
-            states jobs         $do "$@"
-            states instances    $do "$@"
-            states datasets     $do "$@"
-            states recipes      $do "$@"
-    elif [[ :associated:published: == *:$do:* ]]; then
+    elif [[ :submitted:created:completed: == *:$do:*      ]]; then
+            for d_type in jobs instances datasets recipes; do
+                states $d_type $do "$@"
+            done
+    elif [[ :associated:published: == *:$do:*             ]]; then
             states datasets $do "$@"
-    elif [[ :create:tester:inst:inst_to_job:inst_to_cols:inst_to_dims:inst_to_col1:inst_like:inst_release:inst_confirm:job_to_file: == *:$do:* \
+    elif [[ :create:tester:inst:inst_to_job:inst_to_cols:inst_to_dims:inst_to_col1:inst_like:inst_release:inst_confirm:inst_put:job_to_file: == *:$do:* \
                 || :dset:assoc:filt:create_filt:create_filt_opt:create_dset:hier:clist: == *:$do:* \
                 || :tot_ob:db_ins_ob:ins_ob:submit:db_wipe:db:db_init:mongo_init:dim_x:neo:neo_count:neo_nodes:cypher_obs:mongo_all:mongo_wipe: == *:$do:* \
                 || :add_file:health:ok:recipe: == *:$do:* ]]; then
