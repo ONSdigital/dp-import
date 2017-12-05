@@ -68,27 +68,26 @@ Navigate to <http://localhost:8081/florence/datasets>
  - select an edition
  - click submit to publishing
 
-Get instance data from the import API - the instance state should be 'complete' if the import succeeded (copy the instance ID - it will be the last instance in the array):
+Get instance data from the import API - the instance state should be 'completed' if the import succeeded (copy the instance ID - it will be the last instance in the array):
 
 Example curl command to GET instances:
 ```
 curl --header 'internal-token:FD0108EA-825D-411C-9B1D-41EF7727F465' http://localhost:22000/instances | jq
 ```
 
-#### Set the release date and license values on the instance (replace the instance ID with the one you created).
+#### Set the release date value on the instance (replace the instance ID with the one you created).
 
 API call details:
 ```
 PUT localhost:22000/instances/750102f4-2839-441f-b2e4-6cf99d26858a
 {
-	"release_date": "todayisfine",
-	"license": "todayisfine"
+	"release_date": "todayisfine"
 }
 ```
 
 Example curl command to PUT instance data:
 ```
-curl -v -X PUT -d '{"release_date":"today", "license": "wut"}' --header 'internal-token:FD0108EA-825D-411C-9B1D-41EF7727F465' localhost:22000/instances/750102f4-2839-441f-b2e4-6cf99d26858a
+curl -v -X PUT -d '{"release_date":"today"}' --header 'internal-token:FD0108EA-825D-411C-9B1D-41EF7727F465' localhost:22000/instances/750102f4-2839-441f-b2e4-6cf99d26858a
 ```
 
 #### Set the instance to 'edition-confirmed' (replace the instance ID with the one you created)
@@ -108,6 +107,12 @@ Example curl command to PUT instance state:
 ```
 curl -v -X PUT -d '{"state":"edition-confirmed", "edition":"Time-series"}' --header 'internal-token:FD0108EA-825D-411C-9B1D-41EF7727F465' localhost:22000/instances/750102f4-2839-441f-b2e4-6cf99d26858a
 ```
+
+##### Notes
+Once the instance state has been successfully updated to `edition-confirmed` then the edition resource is created if it does not already exist.
+
+It is possible to combine the previous two requests into one or seperate request to update edition and state into two requests. 
+The above request will fail if the edition is not set as the API does not know what edition this instance is related to.
 
 #### Associate the dataset with a collection
 
@@ -134,7 +139,13 @@ Example curl command to PUT dataset version state / collection:
 curl -v -X PUT -d '{"state":"associated", "collection_id":"123"}' --header 'internal-token:FD0108EA-825D-411C-9B1D-41EF7727F465' http://localhost:22000/datasets/931a8a2a-0dc8-42b6-a884-7b6054ed3b68/editions/Time-series/versions/1
 ```
 
-#### Set dataset to published
+##### Notes
+Once the version has been updated then the dataset resource is also updated, this includes the following `next.collection_id`, `next.state` and `next.links` are all updated.
+
+It is possible to add a `collection_id` before changing the state to `associated` with two separate requests.
+If the `collection_id` is not set and a request is made to change the state to `associated` then the resource will fail to update.
+
+#### Set version and hence dataset to published
 
 API call details:
 ```
@@ -148,6 +159,10 @@ Example curl command to PUT dataset version state:
 ```
 curl -v -X PUT -d '{"state":"published"}' --header 'internal-token:FD0108EA-825D-411C-9B1D-41EF7727F465' http://localhost:22000/datasets/931a8a2a-0dc8-42b6-a884-7b6054ed3b68/editions/Time-series/versions/1
 ```
+
+##### Notes
+Once the version has been updated with a state of `published`, then the edition is updated; this includes a change of state from `created` to `published` if the resource was not already published from a previous version and the `links.latest_version` is updated.
+Once the edition resource is successfully updated then the dataset resource is updated with a new state `published` on the next sub document and the next sub document is copied over to the current sub document.
 
 #### Check dataset is available via the frontend
 
