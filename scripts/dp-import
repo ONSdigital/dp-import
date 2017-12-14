@@ -8,6 +8,7 @@ usage(){
 
 ID arguments in the following can usually be abbreviated (save typing).
 'args' can be:
+    --env { cmd | cmd-dev }   target env
 
     create                    create an import-job using json to the ImportAPI
     create_filt [$iid]        create a filter-job with instance_id in json to FilterAPI
@@ -30,6 +31,7 @@ ID arguments in the following can usually be abbreviated (save typing).
     created,completed                 as per 'submitted'
     associated|published              as per 'submitted', but only checks datasets
     inst_release  $iid                put {"release_date":"today", "license":"wut"} to instance
+    complete      $iid                put {"state":"completed"} to instance
     inst_confirm  $iid $eid           put {"state":"edition-confirmed", "edition":"Time-series"} to instance
     publish       $dsid $eid $vid      set state=published for dataset instance/edition/version
 
@@ -50,6 +52,7 @@ ID arguments in the following can usually be abbreviated (save typing).
     job_to_file  $jid
 
     ok|health               query the /healthcheck endpoints
+    tun                     show tunnelling
 
     neo                     more undoc'd utilities...
     neo_count
@@ -77,6 +80,11 @@ RECIPE_API_ADDR=${RECIPE_API_ADDR:-localhost:22300}
 ONS_DP_SRC_ROOT=${ONS_DP_SRC_ROOT:-$HOME/go/src/github.com/ONSdigital}
 ONS_DP_FE_ROUTER_URL=${ONS_DP_FE_ROUTER_URL:-http://localhost:20000}
 FLORENCE_URL=${FLORENCE_URL:-http://localhost:8081/florence}
+IMPORT_TRACKER_ADDR=${IMPORT_TRACKER_ADDR:-localhost:21300}
+IMPORT_REPORTER_ADDR=${IMPORT_REPORTER_ADDR:-localhost:22200}
+typeset -a all_apis=( import_api dataset_api filter_api hierarchy_api codelist_api recipe_api )
+# below used for healthchecks
+typeset -a all_endpoints=( ${all_apis[*]} import_tracker import_reporter )
 
 f_count=0
 
@@ -84,6 +92,10 @@ import_api_dir=$ONS_DP_SRC_ROOT/dp-import-api
 filter_api_dir=$ONS_DP_SRC_ROOT/dp-filter-api
 clist_api_dir=$ONS_DP_SRC_ROOT/dp-code-list-api
 dataset_api_dir=$ONS_DP_SRC_ROOT/dp-dataset-api
+dp_ci_dir=$ONS_DP_SRC_ROOT/dp-ci
+dp_setup_dir=$ONS_DP_SRC_ROOT/dp-setup
+secrets_cmd_dir=$dp_ci_dir/secrets/cmd
+secrets_cmd_dev_dir=$dp_ci_dir/secrets/cmd-develop
 
 # postgres (now unused, but see $legacy)
 import_db_name=ImportJobs
@@ -93,8 +105,8 @@ legacy=
 filter_db_name=FilterJobs
 
 # neo4j
-cypher_client=neo4j-client
-cypher_args=neo4j://neo4j@localhost:7687
+# cypher_client=neo4j-client
+# cypher_args=neo4j://neo4j@localhost:7687
 cypher_client=cypher-shell
 cypher_args="--format plain"
 
@@ -118,6 +130,7 @@ mongo_filters_db=$mongo_datasets_db
 mongo_codelists_c=codelists
 mongo_codelists_db=codelists
 mongo_cmd="mongo --quiet"
+mongo_args=
 mongo_js=$(cat <<EOFjs
 var all={
     "imports":      {"db":"$mongo_imports_db",      "coll":"$mongo_imports_c"},
@@ -157,10 +170,14 @@ curly_post(){ curly -X POST "$@";}
 curly(){
         local token=$IMPORT_API_AUTH_TOKEN
         if   [[ ${@:$#} =~ $DATASET_API_ADDR*    ]]; then token=$DATASET_API_AUTH_TOKEN
+        elif [[ ${@:$#} =~ $IMPORT_API_ADDR*     ]]; then token=$IMPORT_API_AUTH_TOKEN
         elif [[ ${@:$#} =~ $FILTER_API_ADDR*     ]]; then token=$FILTER_API_AUTH_TOKEN
         elif [[ ${@:$#} =~ $RECIPE_API_ADDR*     ]]; then token=$RECIPE_API_AUTH_TOKEN
         elif [[ ${@:$#} =~ $HIERARCHY_API_ADDR*  ]]; then token=$HIERARCHY_API_AUTH_TOKEN
         elif [[ ${@:$#} =~ $CODELIST_API_ADDR*   ]]; then token=$CODELIST_API_AUTH_TOKEN
+        elif [[ ${@:$#} =~ $IMPORT_TRACKER_ADDR* ]]; then token=
+        elif [[ ${@:$#} =~ $IMPORT_REPORTER_ADDR* ]]; then token=
+        else g_warn "Unrecognised URL to determine token for: curly $*"
         fi
         curl -sSH "Content-type: application/json" -H "Internal-Token: $token" "$@"
 }
@@ -422,7 +439,9 @@ get_json(){
         local out=$1; shift
         echo "out=:$out:" >&2
         json=$(echo "$out" | perl -nE 'if (/^\s*$/...eof()){ s/^[\r\n]+//m; print;}')
-        echo "$json" | jq .
+        if [[ -n $json ]]; then
+                echo "$json" | jq .
+        fi
 }
 states(){ local url= otype=$1 states=$2; shift 2; url=$(gen_url $otype)\?state=$states; g_info2 "Getting $otype: GET $url"
         local out=$(curly -i "$url")
@@ -432,7 +451,7 @@ states(){ local url= otype=$1 states=$2; shift 2; url=$(gen_url $otype)\?state=$
 do_mongo_raw() {
         local temp_js=/tmp/temp_js_$$_$f_count.js res=0 js=$1; shift; let f_count++
         echo "$js" > $temp_js # grep . $temp_js /dev/null >&2
-        if ! eval $mongo_cmd "$@" $temp_js | perl -pE 's/ObjectId\("([^"]+)"\)/"oId_$1"/g;'; then res=$? ;grep --color . $temp_js /dev/null >&2; fi
+        if ! eval $mongo_cmd $mongo_args "$@" $temp_js | perl -pE 's/ObjectId\("([^"]+)"\)/"oId_$1"/g;'; then res=$? ;grep --color . $temp_js /dev/null >&2; fi
         rm $temp_js
         return $res
 }
@@ -442,7 +461,7 @@ do_mongo_all() { local js=$1; shift; do_mongo_raw "$mongo_js;$ppj_js;$show_r_js;
 do_mongo_imports() { do_mongo "$@" $mongo_imports_db; }
 do_mongo_datasets() { do_mongo "$@" $mongo_datasets_db; }
 like_to_id() {
-        if [[ $2 == */* ]]; then echo $2; g_warn l2id "[$2]"; return; fi # return given URL
+        if [[ $2 == */* ]]; then echo $2; g_warn l2id "[$(g_colr cyan $2)]"; return; fi # return given URL
         if [[ -n $legacy ]]; then
                 psql -U dp $import_db_name -Atc "SELECT ${1}id FROM ${1}s WHERE ${1}id LIKE '$2%'"
         elif [[ $1 == recipe ]]; then
@@ -541,7 +560,12 @@ db_init(){ mongo_init; }
 db_wipe(){ mongo_wipe; pg_wipe; neo_wipe; }
 tester() { do_mongo_imports "db.getCollection('$mongo_imports_c').find({id:/^$1/}, {id:1})"; }
 #tester() { like_to_id job 1d; }
-health(){ for i in $IMPORT_API_ADDR $DATASET_API_ADDR $RECIPE_API_ADDR $FILTER_API_ADDR $HIERARCHY_API_ADDR; do yorn --x api_raw_hdrs GET $i/healthcheck; done; }
+health(){ local api=
+    for api in ${all_endpoints[*]}; do
+        set_endpoint_vars $api $d
+        yorn --comment $api --x api_raw_hdrs GET $ep_addr/healthcheck
+    done
+}
 ok(){ health "$@"; }
 set_s3() {
     def_recipe_id="b944be78-f56d-409b-9ebd-ab2b77ffe187"
@@ -560,49 +584,124 @@ set_s3() {
         s3_file='s3://dp-dimension-extractor/CODED-SAPE-Admin+2013-2015.csv'
     fi
 }
+
+set_endpoint_vars() {
+    local ep=$1 d=$2; shift 2
+    ep_var=${ep^^}_ADDR
+    ep_var_re="$ep_var|${ep^^}_URL"
+    if [[ $ep == codelist_api ]]; then ep_var_re="$ep_var_re|CODE_LIST_API_URL"; fi
+    ep_auth_var=${ep^^}_AUTH_TOKEN
+    #   eval ep_addr=\$$ep_var
+    if [[ -n $d ]]; then
+        ep_addr=$(perl -nE '/^\s*"(?:'"$ep_var_re"')":\s*"(?:http:\/\/)?([^\$]+)",?\s*$/ and say $1 and exit' $d/*.json)
+        ep_auth_token=$(perl -nE '/^\s*"'"$ep_auth_var"'":\s*"([^\$]+)",?\s*$/ and say $1 and exit' $d/*.json)
+        if [[ -z $ep_auth_token ]]; then
+            [[ :hierarchy_api:codelist_api:recipe_api: == *:$ep:* ]] || g_die 2 "Could not get address from grep '$ep_auth_var' $d/*.json"
+        else
+            g_info2 $ep_auth_var= $ep_auth_token
+            eval    $ep_auth_var=\$ep_auth_token
+        fi
+    else
+        eval ep_addr=\$$ep_var
+        eval ep_auth_token=\$$ep_auth_var
+    fi
+}
+
+last_twixt=
 twixt(){
-        local yorn= col=green res=$1 did=$2 next=$3; shift 3
+        local yorn= col=green res=$1 next=$2; shift 2
         if [[ $res != 0 ]]; then col=red; fi
-        yorn --any "Done $(g_colr $col $res: $did) Next: $(g_colr bright_cyan $next) $@"
+        yorn --any "Done $(g_colr $col $res: $last_twixt) Next: $(g_colr bright_cyan $next)" $@
+        last_twixt=$next
 }
 
 set_s3
 
 do=$1; shift
 while [[ -n $do ]]; do
-    if [[ :--coicop:--sape: == *:$do:* ]]; then
+    if   [[ :--coicop:--sape: == *:$do:* ]]; then
             set_s3 $do
             continue
-    elif [[ :-h:--help:help: == *:$do:* ]]; then
+    elif [[ :-h:--help:help: == *:$do:*  ]]; then
             usage
             exit
+    elif [[ $do == --env ]]; then
+            aws_env=$1; shift
+            [[ :cmd:cmd-dev:cmd-develop: == *:$aws_env:* ]] || g_die 2 Bad env: $aws_env
+            [[ cmd-dev == $aws_env ]] && aws_env=cmd-develop
+            d=$secrets_cmd_dev_dir; port_pre=2; if [[ $aws_env == cmd ]];then d=$secrets_cmd_dir; port_pre=5; fi
 
-    elif [[ :job:jobs: == *:$do:* ]]; then jobs_ "$@"
-    elif [[ :all: == *:$do:*      ]]; then
+            neo_host=neo4j-a.$aws_env.ons
+            mongo_host=mongodb-a.$aws_env.ons
+            ip_re='BEGIN{$ip_re=qr/(?<ip>10(?:\.\d{1,3}){3})/;}'
+
+            neo_url_orig=$(  grep    'bolt://' $d/*.json | perl -nE "$ip_re"'m!  "(         bolt   ://.*@ 10\.[0-9.]+:        \d+)",?$ !x and print and exit')
+            neo_url=$(       grep    'bolt://' $d/*.json | perl -nE "$ip_re"'s!.*"(?<pre_ip>bolt   ://.*@)10\.[0-9.]+:(?<port>\d+)",?$ !$+{pre_ip}127.0.0.1:'"$port_pre"'$+{port}!x and print and exit')
+            mongo_url_orig=$(grep 'mongodb://' $d/*.json | perl -nE "$ip_re"'m!  "(         mongodb://.*@ 10\.[0-9.]+:        \d+)",?$ !x and print and exit')
+            mongo_url=$(     grep 'mongodb://' $d/*.json | perl -nE "$ip_re"'s!.*"(?<pre_ip>mongodb://.*@)10\.[0-9.]+:(?<port>\d+)",?$ !$+{pre_ip} . "127.0.0.1:" . ($+{port}+1)!ex and print and exit')
+
+            env_neo_host_port=$(    echo $neo_url_orig   | perl -pE "$ip_re"'s/.*@(10\.[0-9.]+:\d+).*/$1/')
+            local_env_neo_port=$(   echo $neo_url        | perl -pE "$ip_re"'s/.*@(?:\d+\.[0-9.]+|localhost):(\d+).*/$1/')
+            env_mongo_host_port=$(  echo $mongo_url_orig | perl -pE "$ip_re"'s/.*@(10\.[0-9.]+:\d+).*/$1/')
+            local_env_mongo_port=$( echo $mongo_url      | perl -pE "$ip_re"'s/.*@(?:\d+\.[0-9.]+|localhost):(\d+).*/$1/')
+
+            cypher_args=${cypher_args}" -a $neo_url"
+            mongo_args=${mongo_args}" $mongo_url"
+            g_info2 $cypher_client $cypher_args
+            g_info2 $mongo_cmd $mongo_args
+
+            tuns=
+            for api in ${all_apis[*]}; do
+                    set_endpoint_vars $api $d
+                    remote_port=${ep_addr##*:}
+                    [[ -z $remote_port ]] && g_die 2 "Could not get address from egrep '$ep_var_re' $d/*.json"
+                    local_port=${remote_port}
+                    # local_port=3${remote_port#2}; if [[ $remote_port != 2* ]]; then local_port=$remote_port; fi
+                    remote_host=localhost
+                    g_info2 $ep_var=localhost:$local_port
+                    eval    $ep_var=localhost:$local_port
+                    tuns="${tuns} -L $local_port:$remote_host:$remote_port"
+            done
+            [[ -z $tuns ]] && g_die 2 No tuns
+            g_info2 tuns = $tuns
+
+    elif [[ $do == tun                   ]]; then
+            echo screen -t tun-$neo_host   ssh -L $local_env_neo_port:$env_neo_host_port     $neo_host
+            echo screen -t tun-$mongo_host ssh -L $local_env_mongo_port:$env_mongo_host_port $mongo_host
+            ssh_to=10.202.4.74
+            echo screen -t tun-api ssh $tuns $ssh_to
+
+    elif [[ :job:jobs: == *:$do:*        ]]; then
+            jobs_ "$@"
+
+    elif [[ :all: == *:$do:*             ]]; then
             db_wipe
             db_init
-            twixt $? db_init create_dset
+            last_twixt=db_init
+            twixt $? create_dset
             create_dset
-            twixt $? Create "Please upload instance to florence: $FLORENCE_URL/datasets $(g_colr yellow "or agree to 'POST'/create+submit, below")"
+            twixt $? "Please upload instance to florence: $FLORENCE_URL/datasets $(g_colr yellow "or agree to 'POST'/create+submit, below")"
             create --submit
             inst_id=$(inst | jq -r '.items[-1].id')
             if [[ -z $inst_id ]]; then read -p "Found no inst_id ... please supply one: " inst_id; fi
             inst $inst_id
-            twixt $? Created Release
+            twixt $? Release
             inst_release $inst_id
-            twixt $? Released Confirm
+            twixt $? Complete
+            state_put completed $inst_id
+            twixt $? Confirm
             inst_confirm $inst_id
             ver_url=$(inst $inst_id | jq -r '.links.version.href')
             if [[ -z $ver_url ]]; then read -p "Found no ver_url ... please supply one: " ver_url; fi
             g_info Version URL: $ver_url
-            twixt $? Confirm Assoc
+            twixt $? Assoc
             assoc $ver_url
-            twixt $? Assoc Publish
+            twixt $? Publish
             state_put published $ver_url
-            twixt $? Publish "Check dataset at: $ONS_DP_FE_ROUTER_URL/datasets/$def_dset_id"
+            twixt $? "Check dataset at: $ONS_DP_FE_ROUTER_URL/datasets/$def_dset_id"
 
     elif [[ $do == test                                   ]]; then
-            eval $mongo_cmd $mongo_imports_db --eval \""db.getCollection('$mongo_imports_c').find()"\"
+            eval $mongo_cmd $mongo_args $mongo_imports_db --eval \""db.getCollection('$mongo_imports_c').find()"\"
     elif [[ :complete: == *:$do:*                         ]]; then
             state_put completed "$@"
     elif [[ :publish: == *:$do:*                          ]]; then
