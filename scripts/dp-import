@@ -9,6 +9,7 @@ usage(){
 ID arguments in the following can usually be abbreviated (save typing).
 'args' can be:
     --env { cmd | cmd-dev }   target env
+    --svc svc_names           target these services only (can repeat, can be "svc1 svc2")
 
     create                    create an import-job using json to the ImportAPI
     create_filt [$iid]        create a filter-job with instance_id in json to FilterAPI
@@ -82,9 +83,10 @@ ONS_DP_FE_ROUTER_URL=${ONS_DP_FE_ROUTER_URL:-http://localhost:20000}
 FLORENCE_URL=${FLORENCE_URL:-http://localhost:8081/florence}
 IMPORT_TRACKER_ADDR=${IMPORT_TRACKER_ADDR:-localhost:21300}
 IMPORT_REPORTER_ADDR=${IMPORT_REPORTER_ADDR:-localhost:22200}
-typeset -a all_apis=( import_api dataset_api filter_api hierarchy_api codelist_api recipe_api )
+typeset -a all_apis=( dp-import-api dp-dataset-api dp-filter-api dp-hierarchy-api dp-code-list-api dp-recipe-api )
 # below used for healthchecks
-typeset -a all_endpoints=( ${all_apis[*]} import_tracker import_reporter )
+typeset -a all_endpoints=( ${all_apis[*]} dp-import-tracker dp-import-reporter )
+typeset -a requested_svcs=( )
 
 f_count=0
 
@@ -179,7 +181,8 @@ curly(){
         elif [[ ${@:$#} =~ $IMPORT_REPORTER_ADDR* ]]; then token=
         else g_warn "Unrecognised URL to determine token for: curly $*"
         fi
-        curl -sSH "Content-type: application/json" -H "Internal-Token: $token" "$@"
+        g_info2 curl -sSH "Content-type: application/json" -H "Internal-Token: $token" "$@"
+                curl -sSH "Content-type: application/json" -H "Internal-Token: $token" "$@"
 }
 
 show_r_js="function show_(r){if(r==null){print('');return;};if(r.hasNext != undefined){while(r.hasNext()){printjson(r.next());}}else{printjson(r)}}"
@@ -255,7 +258,7 @@ create() {
         g_info2 "New import job... "
         local send_js=${create_json//__s3_file__/$s3_file}
         send_js=${send_js//__recipe_id__/$def_recipe_id}
-        echo $send_js|jq .
+        show_json "$send_js" .
         yorn POST above to API $IMPORT_API_ADDR/jobs || return
         local json= out=$(curly_post -id "$send_js" $IMPORT_API_ADDR/jobs)
         get_json "$out"
@@ -281,7 +284,7 @@ create() {
 create_filt() {
         local instance_id=$(like_to_id instance "$1"); shift
         local create_filt_json_iid=${create_filt_json//<iid>/$instance_id}
-        echo $create_filt_json_iid|jq .
+        show_json "$create_filt_json_iid" .
         yorn "Create filter job... send above: POST $FILTER_API_ADDR/filters" || return
         local json= out=$(curly_post -id "$create_filt_json_iid" $FILTER_API_ADDR/filters)
         get_json "$out"
@@ -299,7 +302,7 @@ create_filt_opt() {
 create_dset(){
         local dset_id=$def_dset_id; if [[ -n $1 ]]; then dset_id=$1; shift; fi
         local url=$(gen_url datasets $dset_id)
-        echo $create_dset_json|jq .
+        show_json "$create_dset_json" .
         yorn "Create dataset... POST above to $url" || return
         local out=$(curly_post -id "$create_dset_json" $url)
         get_json "$out"
@@ -430,7 +433,7 @@ inst_confirm(){ local url=$1; shift; url=$(like_to_id instance $url); url=$(gen_
 
 add_file(){ local url=$1; shift; url=$(like_to_id job $url); url=$(gen_url jobs $url)/files; g_info2 "Adding file: PUT $url"
         local send_js=${add_file_json//__s3_file__/$s3_file}
-        echo "$send_js" | jq .
+        show_json "$send_js" .
         local out=$(curly_put -id "$send_js" $url)
         get_json "$out"
 }
@@ -438,9 +441,15 @@ add_file(){ local url=$1; shift; url=$(like_to_id job $url); url=$(gen_url jobs 
 get_json(){
         local out=$1; shift
         echo "out=:$out:" >&2
-        json=$(echo "$out" | perl -nE 'if (/^\s*$/...eof()){ s/^[\r\n]+//m; print;}')
-        if [[ -n $json ]]; then
-                echo "$json" | jq .
+        show_json "$(echo "$out" | perl -nE 'if (/^\s*$/...eof()){ s/^[\r\n]+//m; print;}')" .
+}
+show_json(){
+        local json=$1; shift
+        if [[ $json == "{"* ]]; then
+                echo "$json" | jq "$@"
+        else
+                g_warn "Bad json [$json]"
+                return 1
         fi
 }
 states(){ local url= otype=$1 states=$2; shift 2; url=$(gen_url $otype)\?state=$states; g_info2 "Getting $otype: GET $url"
@@ -451,12 +460,17 @@ states(){ local url= otype=$1 states=$2; shift 2; url=$(gen_url $otype)\?state=$
 do_mongo_raw() {
         local temp_js=/tmp/temp_js_$$_$f_count.js res=0 js=$1; shift; let f_count++
         echo "$js" > $temp_js # grep . $temp_js /dev/null >&2
+        g_info2   $mongo_cmd $mongo_args "$@" $temp_js
         if ! eval $mongo_cmd $mongo_args "$@" $temp_js | perl -pE 's/ObjectId\("([^"]+)"\)/"oId_$1"/g;'; then res=$? ;grep --color . $temp_js /dev/null >&2; fi
         rm $temp_js
         return $res
 }
 do_mongo_r() { local js=$1; shift; do_mongo_raw "$mongo_js;$ppj_js;$show_r_js;$js;" "$@"; }
-do_mongo() { local js=$1; shift; do_mongo_raw "$mongo_js;$ppj_js;r=$js;$show_r_js;show_(r);" "$@"; }
+do_mongo() { local js=$1 m_db=$2 orig_m_args=$mongo_args; shift 2
+        mongo_args=${mongo_args/?authSource//$m_db?authSource}
+        do_mongo_raw "$mongo_js;$ppj_js;r=$js;$show_r_js;show_(r);" "$@"
+        mongo_args=$orig_m_args
+}
 do_mongo_all() { local js=$1; shift; do_mongo_raw "$mongo_js;$ppj_js;$show_r_js;for(var d in all){var db=db.getSiblingDB(all[d].db);coll=db.getCollection(all[d].coll);$js;}" "$@"; }
 do_mongo_imports() { do_mongo "$@" $mongo_imports_db; }
 do_mongo_datasets() { do_mongo "$@" $mongo_datasets_db; }
@@ -467,7 +481,8 @@ like_to_id() {
         elif [[ $1 == recipe ]]; then
                 api_raw GET $RECIPE_API_ADDR/recipes | jq -r '.items[0].id'
         elif [[ :dataset: == *:$1:* ]]; then
-                do_mongo_datasets "db.getCollection('$mongo_datasets_c').findOne({_id:/^$2/}, {_id:1})" | jq -r ._id
+                dset_json=$(do_mongo_datasets "db.getCollection('$mongo_datasets_c').findOne({_id:/^$2/}, {_id:1})")
+                show_json "$dset_json" -r ._id
         elif [[ :filter: == *:$1:* ]]; then
                 do_mongo_datasets "db.getCollection('$mongo_filters_c').findOne({_id:/^$2/}, {_id:1})" | jq -r ._id
                 # psql -U dp $filter_db_name -Atc "SELECT ${1}JobId FROM ${1}s WHERE ${1}JobId LIKE '$2%'"
@@ -560,10 +575,11 @@ db_init(){ mongo_init; }
 db_wipe(){ mongo_wipe; pg_wipe; neo_wipe; }
 tester() { do_mongo_imports "db.getCollection('$mongo_imports_c').find({id:/^$1/}, {id:1})"; }
 #tester() { like_to_id job 1d; }
-health(){ local api=
-    for api in ${all_endpoints[*]}; do
-        set_endpoint_vars $api $d
-        yorn --comment $api --x api_raw_hdrs GET $ep_addr/healthcheck
+health(){ local ep=
+    for ep in ${all_endpoints[*]}; do
+        is_requested_svc $ep || continue
+        set_endpoint_vars $ep $d
+        yorn --comment $ep --x api_raw_hdrs GET $ep_addr/healthcheck
     done
 }
 ok(){ health "$@"; }
@@ -586,17 +602,17 @@ set_s3() {
 }
 
 set_endpoint_vars() {
-    local ep=$1 d=$2; shift 2
-    ep_var=${ep^^}_ADDR
-    ep_var_re="$ep_var|${ep^^}_URL"
-    if [[ $ep == codelist_api ]]; then ep_var_re="$ep_var_re|CODE_LIST_API_URL"; fi
-    ep_auth_var=${ep^^}_AUTH_TOKEN
-    #   eval ep_addr=\$$ep_var
+    local ep=$1 d=$2 ep_as_var=; shift 2
+    ep_as_var=${ep^^}; ep_as_var=${ep_as_var//-/_}; ep_as_var=${ep_as_var#DP_}; if [[ $ep_as_var == CODE_LIST_API ]]; then ep_as_var=CODELIST_API; fi # uppercase s/-/_/g s/^dp-//
+    ep_var=${ep_as_var}_ADDR
+    ep_var_re="$ep_var|${ep_as_var}_URL"
+    if [[ $ep == dp-code-list-api ]]; then ep_var_re="$ep_var_re|CODE_LIST_API_URL"; fi # sigh
+    local ep_auth_var=${ep_as_var}_AUTH_TOKEN
     if [[ -n $d ]]; then
-        ep_addr=$(perl -nE '/^\s*"(?:'"$ep_var_re"')":\s*"(?:http:\/\/)?([^\$]+)",?\s*$/ and say $1 and exit' $d/*.json)
-        ep_auth_token=$(perl -nE '/^\s*"'"$ep_auth_var"'":\s*"([^\$]+)",?\s*$/ and say $1 and exit' $d/*.json)
+        ep_addr=$(perl       -nE '/^\s*"(?:'"$ep_var_re"')":\s*"(?:http:\/\/)?([^\$]+)",?\s*$/x and say $1 and exit' $d/*.json)
+        ep_auth_token=$(perl -nE '/^\s*"'"$ep_auth_var"'  ":\s*"([^\$]+              )",?\s*$/x and say $1 and exit' $d/*.json)
         if [[ -z $ep_auth_token ]]; then
-            [[ :hierarchy_api:codelist_api:recipe_api: == *:$ep:* ]] || g_die 2 "Could not get address from grep '$ep_auth_var' $d/*.json"
+            [[ :dp-hierarchy-api:dp-code-list-api:dp-recipe-api: == *:$ep:* ]] || g_die 2 "Could not get address from grep '$ep_auth_var' $d/*.json"
         else
             g_info2 $ep_auth_var= $ep_auth_token
             eval    $ep_auth_var=\$ep_auth_token
@@ -605,6 +621,14 @@ set_endpoint_vars() {
         eval ep_addr=\$$ep_var
         eval ep_auth_token=\$$ep_auth_var
     fi
+}
+is_requested_svc() {
+        local svc=$1 s=; shift
+        [[ ${#requested_svcs[*]} -eq 0 ]] && return 0
+        for s in ${requested_svcs[@]}; do
+                [[ $s == $svc ]] && return 0
+        done
+        return 1
 }
 
 last_twixt=
@@ -625,15 +649,25 @@ while [[ -n $do ]]; do
     elif [[ :-h:--help:help: == *:$do:*  ]]; then
             usage
             exit
+    elif [[ $do == --svc ]]; then
+            newly_requested_svcs=$1; shift
+            for r_svc in $newly_requested_svcs; do
+                    requested_svcs+=( $r_svc )
+            done
     elif [[ $do == --env ]]; then
             aws_env=$1; shift
             [[ :cmd:cmd-dev:cmd-develop: == *:$aws_env:* ]] || g_die 2 Bad env: $aws_env
             [[ cmd-dev == $aws_env ]] && aws_env=cmd-develop
             d=$secrets_cmd_dev_dir; port_pre=2; if [[ $aws_env == cmd ]];then d=$secrets_cmd_dir; port_pre=5; fi
 
+            export NOMAD_TOKEN=$(gpg -qd ~/Documents/work/ons/env/$aws_env/nomad.gpg.asc)
+
             neo_host=neo4j-a.$aws_env.ons
             mongo_host=mongodb-a.$aws_env.ons
             ip_re='BEGIN{$ip_re=qr/(?<ip>10(?:\.\d{1,3}){3})/;}'
+
+            kafka_addr=$(    perl -nE '/^\s*"KAFKA_ADDR":\s*"(.+)",?\s*$/ and say $1 and exit' $d/*.json)
+            g_info2 $aws_env KAFKA_ADDR=$kafka_addr
 
             neo_url_orig=$(  grep    'bolt://' $d/*.json | perl -nE "$ip_re"'m!  "(         bolt   ://.*@ 10\.[0-9.]+:        \d+)",?$ !x and print and exit')
             neo_url=$(       grep    'bolt://' $d/*.json | perl -nE "$ip_re"'s!.*"(?<pre_ip>bolt   ://.*@)10\.[0-9.]+:(?<port>\d+)",?$ !$+{pre_ip}127.0.0.1:'"$port_pre"'$+{port}!x and print and exit')
@@ -646,12 +680,14 @@ while [[ -n $do ]]; do
             local_env_mongo_port=$( echo $mongo_url      | perl -pE "$ip_re"'s/.*@(?:\d+\.[0-9.]+|localhost):(\d+).*/$1/')
 
             cypher_args=${cypher_args}" -a $neo_url"
-            mongo_args=${mongo_args}" $mongo_url"
+            mongo_args=${mongo_args}" $mongo_url?authSource=admin"
             g_info2 $cypher_client $cypher_args
-            g_info2 $mongo_cmd $mongo_args
+            g_info2 $mongo_cmd     $mongo_args
 
-            tuns=
+            tuns_pub=
+            tuns_web=
             for api in ${all_apis[*]}; do
+                    is_requested_svc $api || continue
                     set_endpoint_vars $api $d
                     remote_port=${ep_addr##*:}
                     [[ -z $remote_port ]] && g_die 2 "Could not get address from egrep '$ep_var_re' $d/*.json"
@@ -660,16 +696,30 @@ while [[ -n $do ]]; do
                     remote_host=localhost
                     g_info2 $ep_var=localhost:$local_port
                     eval    $ep_var=localhost:$local_port
-                    tuns="${tuns} -L $local_port:$remote_host:$remote_port"
+                    tuns_pub="${tuns_pub} -L $local_port:$remote_host:$remote_port"
             done
-            [[ -z $tuns ]] && g_die 2 No tuns
-            g_info2 tuns = $tuns
+
+            # add nomad tunnel
+            tuns_pub="${tuns_pub} -L 4646:localhost:4646"
+
+            # add kafka tunnel, update env var
+            tun_kafka_port=29092
+            KAFKA_ADDR=localhost:$tun_kafka_port
+            g_info2 export KAFKA_ADDR=$KAFKA_ADDR
+            tuns_pub="${tuns_pub} -L $tun_kafka_port:10.202.3.109:9092"
+
+            [[ -z $tuns_pub && -z $tuns_web ]] && g_die 2 No tuns
+            g_info2 tuns_pub = $tuns_pub
+            g_info2 tuns_web = $tuns_web
 
     elif [[ $do == tun                   ]]; then
+            [[ -n $neo_host ]] || g_die 2 No env specified
             echo screen -t tun-$neo_host   ssh -L $local_env_neo_port:$env_neo_host_port     $neo_host
             echo screen -t tun-$mongo_host ssh -L $local_env_mongo_port:$env_mongo_host_port $mongo_host
-            ssh_to=10.202.4.74
-            echo screen -t tun-api ssh $tuns $ssh_to
+            ssh_to_pub=10.202.4.74
+            [[ -z $tuns_pub ]] || echo screen -t tun-pub ssh $tuns_pub $ssh_to_pub
+            ssh_to_web=10.202.7.104
+            [[ -z $tuns_web ]] || echo screen -t tun-web ssh $tuns_web $ssh_to_web
 
     elif [[ :job:jobs: == *:$do:*        ]]; then
             jobs_ "$@"
