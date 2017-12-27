@@ -18,10 +18,13 @@ Florence->Import-API: POST /jobs/{id} - UpdateJobState("submitted")
 
 note over Import-API: Starts Kafka driven import pipeline
 
-note over Import-Tracker:Polls for new jobs that need tracking
-Import-Tracker->Import-API:GET /jobs
+note over Import-Tracker: Initially determines which instaces to track by calling the dataset API
+Import-Tracker->Dataset-API:GET /instances
 
-Import-API->>Dimension-Extractor:NewImportJob
+note over Import-Tracker: Consumes messages for new instances that need tracking
+Import-API->>Import-Tracker: input-file-available
+
+Import-API->>Dimension-Extractor:input-file-available
 
 Dimension-Extractor->AWS-S3:GetV4File
 
@@ -51,6 +54,10 @@ Observation-Importer->Import-Tracker:ObservationsInserted
 note over Import-Tracker:Maintains a count of inserted observations
 note over Import-Tracker:When the expected number is met, double check against the DB
 
-Import-Tracker->Dataset-API:SetInstanceState("Complete")
+Import-Tracker->Import-API: observation-import-complete
 
-Import-Tracker->Import-API:SetJobState("Complete")
+note over Import-API:Checks if all import tasks are complete for the instance
+Import-API->Dataset-API: SetInstanceState("Complete")
+
+note over Import-API:Checks if all instances are complete for the job
+Import-API->Import-API:SetJobState("Complete")
