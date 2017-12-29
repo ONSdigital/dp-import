@@ -1,0 +1,20 @@
+{
+	"comment": "",
+	"ignore": "test",
+	"package": [
+		{
+			"checksumSHA1": "WI5P8MbnHHGqzuQje+qFoQSUHgk=",
+			"path": "github.com/ONSdigital/go-ns/avro",
+			"revision": "02d3d2f2e96f4d8583192a90d6c8e6932d8ff7b6",
+			"revisionTime": "2017-12-21T09:34:27Z"
+		},
+		{
+			"checksumSHA1": "I6MnUzkLJt+sh73CodD0NKswFrs=",
+			"origin": "github.com/ONSdigital/go-ns/vendor/github.com/go-avro/avro",
+			"path": "github.com/go-avro/avro",
+			"revision": "02d3d2f2e96f4d8583192a90d6c8e6932d8ff7b6",
+			"revisionTime": "2017-12-21T09:34:27Z"
+		}
+	],
+	"rootPath": "github.com/ONSdigital/dp-import"
+}
