@@ -54,10 +54,27 @@ Observation-Importer->Import-Tracker:ObservationsInserted
 note over Import-Tracker:Maintains a count of inserted observations
 note over Import-Tracker:When the expected number is met, double check against the DB
 
-Import-Tracker->Import-API: observation-import-complete
+note over Import-Tracker:Produce data-import-complete message for each hierarchy
+Import-Tracker->>Hierarchy-Builder: data-import-complete (one message per hierarchy)
 
-note over Import-API:Checks if all import tasks are complete for the instance
-Import-API->Dataset-API: SetInstanceState("Complete")
+note over Hierarchy-Builder:Build hierarchy and store in Neo4j
+Hierarchy-Builder->>Import-Tracker: hierarchy-built
+note over Import-Tracker:Send updated task state for the instance to the dataset-api
+Import-Tracker->Dataset-API:SetBuildHierarchyTaskState("Complete")
+note over Import-Tracker:Checks if all import tasks are complete for the instance
 
-note over Import-API:Checks if all instances are complete for the job
-Import-API->Import-API:SetJobState("Complete")
+Hierarchy-Builder->>Search-Builder: hierarchy-built
+
+Search-Builder->Hierarchy-API:GetHierarchyData(dimension-name, instance-id)
+note over Search-Builder:Takes hierarchy data and imports it into search
+
+Search-Builder->>Import-Tracker: search-index-built
+
+Import-Tracker->Dataset-API:SetBuildSearchTaskState("Complete")
+
+note over Import-Tracker:Checks if all import tasks are complete for the instance
+Import-Tracker->Dataset-API:SetInstanceState("Complete")
+
+note over Import-Tracker:Checks if all instances are complete for the job
+Import-Tracker->Import-API:SetJobState("Complete")
+
