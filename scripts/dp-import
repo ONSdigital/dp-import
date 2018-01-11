@@ -118,6 +118,7 @@ mongo_imports_c=imports
 mongo_datasets_db=datasets
 mongo_datasets_c=datasets
 mongo_instances_db=$mongo_datasets_db
+# mongo_instances_c=$mongo_datasets_c
 mongo_instances_c=instances
 mongo_dimensions_db=$mongo_datasets_db
 mongo_dimensions_c=dimensions
@@ -166,6 +167,7 @@ assoc_json='{"state":"associated","collection_id":"95c4669b-3ae9-4ba7-b690-87e89
 inst_dim_json='{"title":"__TITLE__"}'
 
 add_file_json='{"alias_name":"v4-2","url":"'"__s3_file__"'_22"}'
+json=
 
 curly_put (){ curly -X PUT  "$@";}
 curly_post(){ curly -X POST "$@";}
@@ -254,21 +256,24 @@ neo_all(){ neo_nodes "$@"; neo_do "MATCH (n) RETURN COUNT(n) AS node_count;"; }
 
 create() {
         local url= instance_id= job_id= offer_submit=1 do_submit=
-        if [[ $1 == --no-submit ]]; then offer_submit=; shift; elif [[ $1 == --submit ]]; then do_submit=1; offer_submit=; shift; fi
-        g_info2 "New import job... "
+        if   [[ $1 == --no-submit ]]; then shift; offer_submit=
+        elif [[ $1 == --submit    ]]; then shift; offer_submit=; do_submit=1
+        fi
+        g_trace "New import job... "
         local send_js=${create_json//__s3_file__/$s3_file}
         send_js=${send_js//__recipe_id__/$def_recipe_id}
         show_json "$send_js" .
         yorn POST above to API $IMPORT_API_ADDR/jobs || return
-        local json= out=$(curly_post -id "$send_js" $IMPORT_API_ADDR/jobs)
+        local out=$(curly_post -id "$send_js" $IMPORT_API_ADDR/jobs)
         get_json "$out"
         if [[ -n $legacy ]]; then
                 instance_id=$(echo "$json" | jq -r '.instances[0].id')
         else
                 instance_id=$(echo "$json" | jq -r '.links.instances[0].id')
-                job_id=$(echo "$json" | jq -r '.id')
                 [[ $instance_id == null ]] && instance_id=
         fi
+        job_id=$(echo "$json" | jq -r '.id')
+        g_trace Got job_id=$job_id instance_id=$instance_id
         if [[ -n $instance_id ]]; then
                 inst $instance_id
                 if [[ -n $job_id ]]; then
@@ -286,7 +291,7 @@ create_filt() {
         local create_filt_json_iid=${create_filt_json//<iid>/$instance_id}
         show_json "$create_filt_json_iid" .
         yorn "Create filter job... send above: POST $FILTER_API_ADDR/filters" || return
-        local json= out=$(curly_post -id "$create_filt_json_iid" $FILTER_API_ADDR/filters)
+        local out=$(curly_post -id "$create_filt_json_iid" $FILTER_API_ADDR/filters)
         get_json "$out"
         # instance_id=$(echo "$json" | jq -r '.links.instances[0].id')
         # [[ $instance_id == null ]] && instance_id=
@@ -295,7 +300,7 @@ create_filt() {
 }
 create_filt_opt() {
         local filt_id=$(like_to_id filter "$1"); shift
-        local json= out=$(curly_post -id "$create_filt_json_iid" $FILTER_API_ADDR/filters)
+        local out=$(curly_post -id "$create_filt_json_iid" $FILTER_API_ADDR/filters)
         get_json "$out"
 }
 
@@ -372,22 +377,23 @@ api_raw(){      local method=$1 url=$2; local out=$(curly  -X $method $url); ech
 api_raw_hdrs(){ local method=$1 url=$2; local out=$(curly -iX $method $url); echo "$out"; }
 
 getter() {
-        local db_type=$1 id_or_url=$2; shift 2
-        if [[ -n $id_or_url ]]; then id_or_url=$(like_to_id $db_type $id_or_url); [[ -z $id_or_url ]] && return 1; fi
+        local db_type=$1 id_or_url=$2; shift 2; local id_or_url_orig=$id_or_url
+        if [[ -n $id_or_url ]]; then id_or_url=$(like_to_id $db_type $id_or_url); if [[ -z $id_or_url ]]; then : g_warn getter got empty: like_to_id $db_type $id_or_url_orig; return 1; fi; fi
         id_or_url=$(gen_url ${db_type}s "$id_or_url" "$@")
-        g_info2 "Getting ${db_type} info... $id_or_url "
+        g_trace "Getting ${db_type} info... $id_or_url "
         api_raw GET $id_or_url
 }
-inst()  {        getter instance   "$@" | jq .; }
-dset()  {        getter dataset    "$@" | jq .; }
-hier()  {        getter hierarchy  "$@" | jq .; }
-filt()  {        getter filter     "$@" | jq .; }
-clist() {        getter code-list  "$@" | jq .; }
-inst_to_job()  { getter instance   "$@" | jq -r .links.job.id -; }
-inst_to_cols() { getter instance   "$@" | jq -r .headers -; }
-inst_to_all()  { getter instance   "$@" | perl -MJSON -E '{local $/; $h=decode_json <>; $col=0; for my $h (@{ $hash->{headers} }){ $col++; if ($col==1) { $x=($h =~ s/V4_//r); say "$col\tx=$x\t$h" if 0; next; } if ($col<=$skip) { say "$col\tskip\y$h" if 0; next; } say $h if ($col-$x)%2; } }'; }
-inst_to_dims() { local col1=$(inst_to_col1 "$@"); getter instance "$@" | perl -MJSON -E '{local $/; $h=decode_json <>; for(my $c=1+'"$col1"'; $c<@{$h->{headers}}; $c+=2){ say $h->{headers}->[$c]; } }'; }
-inst_to_col1() { getter instance "$@" | perl -MJSON -E '{local $/; $h=decode_json <>; say 1+($h->{headers}->[0] =~ s/V4_//r);}'; }
+getter_json() {  local jq_args=$1; shift; local o=$(getter "$@"); [[ -z $o ]] && return 1; echo "$o" | jq $jq_args; }
+inst()  {        getter_json . instance   "$@"; }
+dset()  {        getter_json . dataset    "$@"; }
+hier()  {        getter_json . hierarchy  "$@"; }
+filt()  {        getter_json . filter     "$@"; }
+clist() {        getter_json . code-list  "$@"; }
+inst_to_job()  { getter_json "-r .links.job.id" instance "$@"; }
+inst_to_cols() { getter_json "-r .headers"      instance "$@"; }
+inst_to_all()  { local o=$(getter instance   "$@"); [[ -z $o ]] && return 1; echo "$o" | perl -MJSON -E '{local $/; $h=decode_json <>; $col=0; for my $h (@{ $hash->{headers} }){ $col++; if ($col==1) { $x=($h =~ s/V4_//r); say "$col\tx=$x\t$h" if 0; next; } if ($col<=$skip) { say "$col\tskip\y$h" if 0; next; } say $h if ($col-$x)%2; } }'; }
+inst_to_dims() { local col1=$(inst_to_col1 "$@") o=$(getter instance "$@"); [[ -z $o ]] && return 1; echo "$o" | perl -MJSON -E '{local $/; $h=decode_json <>; for(my $c=1+'"$col1"'; $c<@{$h->{headers}}; $c+=2){ say $h->{headers}->[$c]; } }'; }
+inst_to_col1() { local o=$(getter instance   "$@"); [[ -z $o ]] && return 1; echo "$o" | perl -MJSON -E '{local $/; $h=decode_json <>; say 1+($h->{headers}->[0] =~ s/V4_//r);}'; }
 job_to_file() { getter job "$@" | jq -r '.files[0].url' -; }
 jobs_(){ local url=$1; shift; getter job $url | jq .; }
 recipe() { local url=$1; shift; getter recipe $url | jq .; }
@@ -439,16 +445,31 @@ add_file(){ local url=$1; shift; url=$(like_to_id job $url); url=$(gen_url jobs 
 }
 
 get_json(){
-        local out=$1; shift
+        local out=$1 res=0; shift
         echo "out=:$out:" >&2
-        show_json "$(echo "$out" | perl -nE 'if (/^\s*$/...eof()){ s/^[\r\n]+//m; print;}')" .
+
+        # XXX $json is global!
+        json="$(echo "$out" | perl -nE 'if (/^\s*$/...eof()){ s/^[\r\n]+//m; print;}')"
+
+        if ! show_json "$json" .; then
+                res=1
+                # Bad json, but HTTP ok?
+                if [[ $out == "HTTP/1.1 2"* ]]; then
+                        g_trace "HTTP Response looks good, though: $(echo "$out" | head -1)"
+                        res=0
+                fi
+        fi
+        return $res
 }
 show_json(){
         local json=$1; shift
         if [[ $json == "{"* ]]; then
                 echo "$json" | jq "$@"
+        elif [[ $json == "" ]]; then
+                g_warn "No json/body"
+                return 1
         else
-                g_warn "Bad json [$json]"
+                g_warn "Bad json '$json'"
                 return 1
         fi
 }
@@ -467,8 +488,11 @@ do_mongo_raw() {
 }
 do_mongo_r() { local js=$1; shift; do_mongo_raw "$mongo_js;$ppj_js;$show_r_js;$js;" "$@"; }
 do_mongo() { local js=$1 m_db=$2 orig_m_args=$mongo_args; shift 2
-        mongo_args=${mongo_args/?authSource//$m_db?authSource}
-        do_mongo_raw "$mongo_js;$ppj_js;r=$js;$show_r_js;show_(r);" "$@"
+        if [[ $mongo_args == *authSource* ]]; then
+            mongo_args=${mongo_args/?authSource//$m_db?authSource}
+            m_db=
+        fi
+        do_mongo_raw "$mongo_js;$ppj_js;r=$js;$show_r_js;show_(r);" "$@" $m_db
         mongo_args=$orig_m_args
 }
 do_mongo_all() { local js=$1; shift; do_mongo_raw "$mongo_js;$ppj_js;$show_r_js;for(var d in all){var db=db.getSiblingDB(all[d].db);coll=db.getCollection(all[d].coll);$js;}" "$@"; }
@@ -556,7 +580,7 @@ mongo_all (){ local d= arg=
             [[ " $@ " == *" $d "* ]] || continue
         fi
         if [[ $arg == --count ]]; then
-            g_info $d count: $(do_mongo_all "if(d=='$d'){count=coll.count();show_(count)}")
+                g_info $(g_colr bright_cyan $d) count: $(g_colr yellow $(do_mongo_all "if(d=='$d'){count=coll.count();show_(count)}"))
         elif [[ $arg == --wipe ]]; then
             yorn --comment "db $(g_colr bright_cyan $d)" --xc do_mongo_all "if(d=='$d'){show_(coll.deleteMany({}))}"
         else
@@ -641,7 +665,7 @@ twixt(){
 
 set_s3
 
-do=$1; shift
+do=$1; res=0; shift
 while [[ -n $do ]]; do
     if   [[ :--coicop:--sape: == *:$do:* ]]; then
             set_s3 $do
@@ -722,7 +746,8 @@ while [[ -n $do ]]; do
             [[ -z $tuns_web ]] || echo screen -t tun-web ssh $tuns_web $ssh_to_web
 
     elif [[ :job:jobs: == *:$do:*        ]]; then
-            jobs_ "$@"
+            if ! jobs_ "$@"; then res=1; break; fi
+            set --
 
     elif [[ :all: == *:$do:*             ]]; then
             db_wipe
@@ -731,15 +756,22 @@ while [[ -n $do ]]; do
             twixt $? create_dset
             create_dset
             twixt $? "Please upload instance to florence: $FLORENCE_URL/datasets $(g_colr yellow "or agree to 'POST'/create+submit, below")"
+            # start the import by marking job as submitted
             create --submit
+
             inst_id=$(inst | jq -r '.items[-1].id')
-            if [[ -z $inst_id ]]; then read -p "Found no inst_id ... please supply one: " inst_id; fi
+            if [[ -z $inst_id ]]; then read -p "Found no inst_id ... please supply one: " inst_id; else g_trace "Got instance_id: [$inst_id]"; fi
             inst $inst_id
+
+            # PST take over to publish...
             twixt $? Release
             inst_release $inst_id
-            twixt $? Complete
-            state_put completed $inst_id
-            twixt $? Confirm
+
+            # Complete wasn't needed by 2018-01-08
+            # twixt $? Complete
+            # state_put completed $inst_id
+
+            twixt $? Edition-confirm
             inst_confirm $inst_id
             ver_url=$(inst $inst_id | jq -r '.links.version.href')
             if [[ -z $ver_url ]]; then read -p "Found no ver_url ... please supply one: " ver_url; fi
@@ -766,7 +798,7 @@ while [[ -n $do ]]; do
                 || :dset:assoc:filt:create_filt:create_filt_opt:create_dset:hier:clist: == *:$do:* \
                 || :tot_ob:db_ins_ob:ins_ob:submit:db_wipe:db:db_init:mongo_init:dim_x:neo:neo_count:neo_nodes:cypher_obs:mongo_all:mongo_wipe: == *:$do:* \
                 || :add_file:health:ok:recipe: == *:$do:* ]]; then
-            $do "$@"
+            if ! $do "$@"; then res=1; break; fi
             set --
     else
             usage >&2
@@ -775,3 +807,5 @@ while [[ -n $do ]]; do
     res=$?; (( res > 0 )) && g_die $res "$do failed: $res"
     do=$1; shift
 done
+
+exit $res
