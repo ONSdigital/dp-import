@@ -24,7 +24,7 @@ dp-import
 
 #### Import process
 
-See the (import sequence)[./docs/import-sequence/README.md] documentation.
+See the [import sequence](./docs/import-sequence/README.md) documentation.
 
 #### Running the services
 
