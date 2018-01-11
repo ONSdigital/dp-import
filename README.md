@@ -53,12 +53,12 @@ Ensure a dataset exists on the dataset API for the dataset specified in the reci
 The current stubbed recipe api specifies dataset ID 931a8a2a-0dc8-42b6-a884-7b6054ed3b68 for the CPI dataset recipe.
 
 ```
-curl --header 'internal-token:FD0108EA-825D-411C-9B1D-41EF7727F465' http://localhost:22000/datasets/931a8a2a-0dc8-42b6-a884-7b6054ed3b68
+curl --header 'internal-token:FD0108EA-825D-411C-9B1D-41EF7727F465' http://localhost:22000/datasets/cpih01
 ```
 
 If not then create one (already set to published):
 ```
-curl -X POST -d '{"release_frequency":"yearly", "state": "published", "theme": "population", "title": "CPI" }' --header 'internal-token:FD0108EA-825D-411C-9B1D-41EF7727F465' http://localhost:22000/datasets/931a8a2a-0dc8-42b6-a884-7b6054ed3b68
+curl -X POST -d '{"release_frequency":"yearly", "state": "published", "theme": "population", "title": "CPI" }' --header 'internal-token:FD0108EA-825D-411C-9B1D-41EF7727F465' http://localhost:22000/datasets/cpih01
 ```
 
 #### Create instance
@@ -127,7 +127,7 @@ Copy the link for the version URL to use in the following calls.
 
 API call details:
 ```
-PUT http://localhost:22000/datasets/931a8a2a-0dc8-42b6-a884-7b6054ed3b68/editions/Time-series/versions/1
+PUT http://localhost:22000/datasets/cpih01/editions/Time-series/versions/1
 {
 	"collection_id": "1234",
 	"state": "associated"
@@ -136,7 +136,7 @@ PUT http://localhost:22000/datasets/931a8a2a-0dc8-42b6-a884-7b6054ed3b68/edition
 
 Example curl command to PUT dataset version state / collection:
 ```
-curl -v -X PUT -d '{"state":"associated", "collection_id":"123"}' --header 'internal-token:FD0108EA-825D-411C-9B1D-41EF7727F465' http://localhost:22000/datasets/931a8a2a-0dc8-42b6-a884-7b6054ed3b68/editions/Time-series/versions/1
+curl -v -X PUT -d '{"state":"associated", "collection_id":"123"}' --header 'internal-token:FD0108EA-825D-411C-9B1D-41EF7727F465' http://localhost:22000/datasets/cpih01/editions/Time-series/versions/1
 ```
 
 ##### Notes
@@ -149,7 +149,7 @@ If the `collection_id` is not set and a request is made to change the state to `
 
 API call details:
 ```
-PUT http://localhost:22000/datasets/931a8a2a-0dc8-42b6-a884-7b6054ed3b68/editions/Time-series/versions/1
+PUT http://localhost:22000/datasets/cpih01/editions/Time-series/versions/1
 {
 	"state": "published"
 }
@@ -157,7 +157,7 @@ PUT http://localhost:22000/datasets/931a8a2a-0dc8-42b6-a884-7b6054ed3b68/edition
 
 Example curl command to PUT dataset version state:
 ```
-curl -v -X PUT -d '{"state":"published"}' --header 'internal-token:FD0108EA-825D-411C-9B1D-41EF7727F465' http://localhost:22000/datasets/931a8a2a-0dc8-42b6-a884-7b6054ed3b68/editions/Time-series/versions/1
+curl -v -X PUT -d '{"state":"published"}' --header 'internal-token:FD0108EA-825D-411C-9B1D-41EF7727F465' http://localhost:22000/datasets/cpih01/editions/Time-series/versions/1
 ```
 
 ##### Notes
@@ -166,7 +166,7 @@ Once the edition resource is successfully updated then the dataset resource is u
 
 #### Check dataset is available via the frontend
 
-You should now see the details of the dataset via the frontend by navigating to <http://localhost:20000/datasets/931a8a2a-0dc8-42b6-a884-7b6054ed3b68>
+You should now see the details of the dataset via the frontend by navigating to <http://localhost:20000/datasets/cpih01>
 
 For filtering hierarchical dimensions, ensure you have created the hierarchy for the instance as detailed here: <https://github.com/ONSdigital/dp-hierarchy-builder>
 
