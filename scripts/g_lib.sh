@@ -1,5 +1,8 @@
 #!/bin/false dotme
 
+if [[ -z ${g_lib_loaded:-} ]]; then
+g_lib_loaded=1
+
 g_colr() { local col=$1 recurse= rst=$'\e[0m'; shift  # '[-r] bright_white_on_red' WHITE_on_red bold -- all valid
     if [[ $col == -r ]]; then recurse=1; col=$1; shift; fi
     if [[ -t 0 ]]; then
@@ -18,7 +21,7 @@ g_err()     { g_ts "$(g_colr -r RED    ERROR "$@")" >&2; }
 g_warn()    { g_ts "$(g_colr -r YELLOW WARN  "$@")" >&2; }
 g_log()     { g_ts "$@"; }
 g_opts()    { while [[ -n $1 ]]; do if [[ $1 == host ]]; then g_ts_host=$myHOST; fi; shift; done; }
-g_zsh()     { [[ -n $ZSH_NAME ]]; }
+g_zsh()     { [[ -n ${ZSH_NAME:-} ]]; }
 g_row_col() { local X= R= C=; if g_zsh; then IFS=';[' read -sdR X\?$'\E[6n' R C; else IFS=';[' read -sdR -p $'\E[6n' X R C; fi; echo $R $C; }
 g_col()     { local rc="$(g_row_col)"; echo ${rc#* }; }
 g_cont()    { local res=$1 arg=--no; shift; if [[ $res == -y ]]; then arg=; res=$1; shift; fi; yorn $arg "$@" Continue after $(g_colr bright_white_on_red error code $res) || exit $res; }
@@ -47,9 +50,10 @@ g_ensure_in_path() { # [ --end ] path...
 	done
 }
 
+g_do_all=
 yorn() {
 	local quit_to= def=yn g_all=a do_it= res= cont= comment= cont_ok= no_ok= any_key= hit=
-	while [[ $1 == --* ]]; do
+	while [[ -n $1 && $1 == --* ]]; do
 		if   [[ $1 == --           ]]; then shift; break
 		elif [[ $1 == --any        ]]; then any_key=y
 		elif [[ $1 == --comment    ]]; then comment=$(g_colr -r yellow "$2 "); shift
@@ -100,3 +104,5 @@ yorn() {
 	fi
 	return $res
 }
+
+fi
