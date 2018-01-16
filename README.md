@@ -4,7 +4,7 @@ dp-import
 ### Getting started
 
 #### Required dependencies
- 
+
 ##### Kafka
 
 - Requires [Kafka 0.10.2.1](https://www.apache.org/dyn/closer.cgi?path=/kafka/0.10.2.1/kafka_2.11-0.10.2.1.tgz) 
@@ -21,6 +21,10 @@ dp-import
 
 * Run ```brew install mongodb```
 * Run ```brew services start mongodb```
+
+#### Import process
+
+See the [import sequence](./docs/import-sequence/README.md) documentation.
 
 #### Running the services
 
