@@ -18,10 +18,13 @@ Florence->Import-API: POST /jobs/{id} - UpdateJobState("submitted")
 
 note over Import-API: Starts Kafka driven import pipeline
 
-note over Import-Tracker:Polls for new jobs that need tracking
-Import-Tracker->Import-API:GET /jobs
+note over Import-Tracker: Initially determines which instances to track by calling the dataset API
+Import-Tracker->Dataset-API:GET /instances
 
-Import-API->>Dimension-Extractor:NewImportJob
+note over Import-Tracker: Consumes messages for new instances that need tracking
+Import-API->>Import-Tracker: input-file-available
+
+Import-API->>Dimension-Extractor:input-file-available
 
 Dimension-Extractor->AWS-S3:GetV4File
 
@@ -49,8 +52,35 @@ note over Observation-Importer:Store observations in Neo4j
 Observation-Importer->Import-Tracker:ObservationsInserted
 
 note over Import-Tracker:Maintains a count of inserted observations
+
+Import-Tracker->Dataset-API:PUT observation count
+
+note over Import-Tracker:Also polls for changes in the observation count from other tracker instances
+
+Import-Tracker->Dataset-API:GET observation count
+
 note over Import-Tracker:When the expected number is met, double check against the DB
 
-Import-Tracker->Dataset-API:SetInstanceState("Complete")
+note over Import-Tracker:Produce data-import-complete message for each hierarchy
+Import-Tracker->>Hierarchy-Builder: data-import-complete (one message per hierarchy)
 
-Import-Tracker->Import-API:SetJobState("Complete")
+note over Hierarchy-Builder:Build hierarchy and store in Neo4j
+Hierarchy-Builder->>Import-Tracker: hierarchy-built
+note over Import-Tracker:Send updated task state for the instance to the dataset-api
+Import-Tracker->Dataset-API:SetBuildHierarchyTaskState("completed")
+
+Hierarchy-Builder->>Search-Builder: hierarchy-built
+
+Search-Builder->Hierarchy-API:GetHierarchyData(dimension-name, instance-id)
+note over Search-Builder:Takes hierarchy data and imports it into search
+
+Search-Builder->>Import-Tracker: search-index-built
+
+Import-Tracker->Dataset-API:SetBuildSearchTaskState("completed")
+
+note over Import-Tracker:Checks if all import tasks are complete for the instance
+Import-Tracker->Dataset-API:SetInstanceState("completed")
+
+note over Import-Tracker:Checks if all instances are complete for the job
+Import-Tracker->Import-API:SetJobState("completed")
+
