@@ -626,19 +626,20 @@ set_s3() {
 }
 
 set_endpoint_vars() {
-    local ep=$1 d=$2 ep_as_var=; shift 2
+    # globals set: $ep_var $ep_addr $ep_auth_token
+    local ep=$1 d=$2 ep_as_var=; shift 2 # $d is dir for secrets
     ep_as_var=${ep^^}; ep_as_var=${ep_as_var//-/_}; ep_as_var=${ep_as_var#DP_}; if [[ $ep_as_var == CODE_LIST_API ]]; then ep_as_var=CODELIST_API; fi # uppercase s/-/_/g s/^dp-//
     ep_var=${ep_as_var}_ADDR
     ep_var_re="$ep_var|${ep_as_var}_URL"
     if [[ $ep == dp-code-list-api ]]; then ep_var_re="$ep_var_re|CODE_LIST_API_URL"; fi # sigh
     local ep_auth_var=${ep_as_var}_AUTH_TOKEN
     if [[ -n $d ]]; then
-        ep_addr=$(perl       -nE '/^\s*"(?:'"$ep_var_re"')":\s*"(?:http:\/\/)?([^\$]+)",?\s*$/x and say $1 and exit' $d/*.json)
-        ep_auth_token=$(perl -nE '/^\s*"'"$ep_auth_var"'  ":\s*"([^\$]+              )",?\s*$/x and say $1 and exit' $d/*.json)
+        ep_addr=$(perl -nE 'our $b;if (/^\s*"(?:'"$ep_var_re"')":\s*"(?:http:\/\/)?(.+)",?\s*$/x) { my $h_p=$1; $b=$h_p if $b eq "" or $h_p !~ /\$/; if ($b !~ /\$/) { say $b;exit; } }END{say $b}' $d/*.json)
+        ep_auth_token=$(perl -nE '/^\s*"'"$ep_auth_var"'  ":\s*"([^\$]+)",?\s*$/x and say $1 and exit' $d/*.json)
         if [[ -z $ep_auth_token ]]; then
             [[ :dp-hierarchy-api:dp-code-list-api:dp-recipe-api: == *:$ep:* ]] || g_die 2 "Could not get address from grep '$ep_auth_var' $d/*.json"
         else
-            g_trace $ep_auth_var= $ep_auth_token
+            g_trace $ep_auth_var=${ep_auth_token}
             eval    $ep_auth_var=\$ep_auth_token
         fi
     else
@@ -684,7 +685,8 @@ while [[ -n $do ]]; do
             [[ cmd-dev == $aws_env ]] && aws_env=cmd-develop
             d=$secrets_cmd_dev_dir; port_pre=2; if [[ $aws_env == cmd ]];then d=$secrets_cmd_dir; port_pre=5; fi
 
-            export NOMAD_TOKEN=$(gpg -qd ~/Documents/work/ons/env/$aws_env/nomad.gpg.asc)
+            nomad_token_file=~/Documents/work/ons/env/$aws_env/nomad.gpg.asc
+            if [[ -f $nomad_token_file ]]; then export NOMAD_TOKEN=$(gpg -qd $nomad_token_file); fi
 
             neo_host=neo4j-a.$aws_env.ons
             mongo_host=mongodb-a.$aws_env.ons
@@ -716,7 +718,6 @@ while [[ -n $do ]]; do
                     remote_port=${ep_addr##*:}
                     [[ -z $remote_port ]] && g_die 2 "Could not get address from egrep '$ep_var_re' $d/*.json"
                     local_port=${remote_port}
-                    # local_port=3${remote_port#2}; if [[ $remote_port != 2* ]]; then local_port=$remote_port; fi
                     remote_host=localhost
                     g_trace $ep_var=localhost:$local_port
                     eval    $ep_var=localhost:$local_port
@@ -740,10 +741,16 @@ while [[ -n $do ]]; do
             [[ -n $neo_host ]] || g_die 2 No env specified
             echo screen -t tun-$neo_host   ssh -L $local_env_neo_port:$env_neo_host_port     $neo_host
             echo screen -t tun-$mongo_host ssh -L $local_env_mongo_port:$env_mongo_host_port $mongo_host
-            ssh_to_pub=10.202.4.74
-            [[ -z $tuns_pub ]] || echo screen -t tun-pub ssh $tuns_pub $ssh_to_pub
-            ssh_to_web=10.202.7.104
-            [[ -z $tuns_web ]] || echo screen -t tun-web ssh $tuns_web $ssh_to_web
+            if   [[ $aws_env == cmd-develop ]]; then
+                    ssh_to_pub=10.202.4.74 # TODO
+                    ssh_to_web=10.202.7.104 # TODO
+            elif [[ $aws_env == cmd ]]; then
+                    g_warn IPs are wrong...
+                    ssh_to_pub=10.201.1.1 # TODO XXX
+                    ssh_to_web=10.201.0.0 # TODO XXX
+            fi
+            [[ -z $tuns_pub ]] || echo screen -t tun-pub-$aws_env ssh $tuns_pub $ssh_to_pub
+            [[ -z $tuns_web ]] || echo screen -t tun-web-$aws_env ssh $tuns_web $ssh_to_web
 
     elif [[ :job:jobs: == *:$do:*        ]]; then
             if ! jobs_ "$@"; then res=1; break; fi
