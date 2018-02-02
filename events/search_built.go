@@ -2,8 +2,8 @@ package events
 
 import "github.com/ONSdigital/go-ns/avro"
 
-// SearchBuilt contains data related to a search that has just been built.
-type SearchBuilt struct {
+// SearchIndexBuilt contains data related to a search that has just been built.
+type SearchIndexBuilt struct {
 	InstanceID    string `avro:"instance_id"`
 	DimensionName string `avro:"dimension_name"`
 }
@@ -18,6 +18,6 @@ var searchIndexBuilt = `{
 }`
 
 // SearchIndexBuiltSchema is the Avro schema for each dimension hierarchy successfuly sent to elastic
-var SearchIndexBuiltSchema *avro.Schema = &avro.Schema{
+var SearchIndexBuiltSchema = &avro.Schema{
 	Definition: searchIndexBuilt,
 }
