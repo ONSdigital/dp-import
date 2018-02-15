@@ -11,6 +11,8 @@ ID arguments in the following can usually be abbreviated (save typing).
     --env { cmd | cmd-dev }   target env
     --svc svc_names           target these services only (can repeat, can be "svc1 svc2")
 
+    all                       wipe, re-seed, re-create, submit, publish, ... - do it all
+
     create                    create an import-job using json to the ImportAPI
     create_filt [$iid]        create a filter-job with instance_id in json to FilterAPI
     submit                    change an import-job to state:submitted on the ImportAPI
@@ -77,13 +79,15 @@ HIERARCHY_API_ADDR=${HIERARCHY_API_ADDR:-localhost:22600}
 HIERARCHY_API_AUTH_TOKEN=${HIERARCHY_API_AUTH_TOKEN:-$IMPORT_API_AUTH_TOKEN}
 CODELIST_API_ADDR=${CODELIST_API_ADDR:-localhost:22400}
 CODELIST_API_AUTH_TOKEN=${CODELIST_API_AUTH_TOKEN:-$IMPORT_API_AUTH_TOKEN}
+SEARCH_API_ADDR=${SEARCH_API_ADDR:-localhost:23100}
+SEARCH_API_AUTH_TOKEN=${SEARCH_API_AUTH_TOKEN:-$IMPORT_API_AUTH_TOKEN}
 RECIPE_API_ADDR=${RECIPE_API_ADDR:-localhost:22300}
 ONS_DP_SRC_ROOT=${ONS_DP_SRC_ROOT:-$HOME/go/src/github.com/ONSdigital}
 ONS_DP_FE_ROUTER_URL=${ONS_DP_FE_ROUTER_URL:-http://localhost:20000}
 FLORENCE_URL=${FLORENCE_URL:-http://localhost:8081/florence}
 IMPORT_TRACKER_ADDR=${IMPORT_TRACKER_ADDR:-localhost:21300}
 IMPORT_REPORTER_ADDR=${IMPORT_REPORTER_ADDR:-localhost:22200}
-typeset -a all_apis=( dp-import-api dp-dataset-api dp-filter-api dp-hierarchy-api dp-code-list-api dp-recipe-api )
+typeset -a all_apis=( dp-import-api dp-dataset-api dp-filter-api dp-hierarchy-api dp-code-list-api dp-recipe-api dp-search-api )
 # below used for healthchecks
 typeset -a all_endpoints=( ${all_apis[*]} dp-import-tracker dp-import-reporter )
 typeset -a requested_svcs=( )
@@ -178,6 +182,7 @@ curly(){
         elif [[ ${@:$#} =~ $FILTER_API_ADDR*     ]]; then token=$FILTER_API_AUTH_TOKEN
         elif [[ ${@:$#} =~ $RECIPE_API_ADDR*     ]]; then token=$RECIPE_API_AUTH_TOKEN
         elif [[ ${@:$#} =~ $HIERARCHY_API_ADDR*  ]]; then token=$HIERARCHY_API_AUTH_TOKEN
+        elif [[ ${@:$#} =~ $SEARCH_API_ADDR*     ]]; then token=$SEARCH_API_AUTH_TOKEN
         elif [[ ${@:$#} =~ $CODELIST_API_ADDR*   ]]; then token=$CODELIST_API_AUTH_TOKEN
         elif [[ ${@:$#} =~ $IMPORT_TRACKER_ADDR* ]]; then token=
         elif [[ ${@:$#} =~ $IMPORT_REPORTER_ADDR* ]]; then token=
@@ -325,7 +330,7 @@ gen_url(){
                 if   [[ :filters:instances:datasets:dimensions:editions:versions:contacts:hierarchies:code-lists: == *:$sub_url:* ]]; then
                         local next_uri= # colon-separated and -terminated
                         if   [[ :datasets: == *:$sub_url:* && -n $1 ]]; then
-                                # hierarchy
+                                # dataset
                                 next_uri=$sub_url:editions:versions:dimensions:
                                 sub_url=$DATASET_API_ADDR
                         elif [[ :hierarchies: == *:$sub_url:* ]]; then
@@ -513,7 +518,7 @@ like_to_id() {
         elif [[ :instance: == *:$1:* ]]; then
                 # g_warn iid=$2
                 do_mongo_datasets "db.getCollection('$mongo_instances_c').findOne({id:/^$2/}, {id:1})" | jq -r .id
-        elif [[ :hierarchy:code-list: == *:$1:* ]]; then
+        elif [[ :search:hierarchy:code-list: == *:$1:* ]]; then
                 echo $2
                 return
         else # job
