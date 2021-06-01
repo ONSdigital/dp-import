@@ -1,6 +1,6 @@
 package events
 
-import "github.com/ONSdigital/go-ns/avro"
+import "github.com/ONSdigital/dp-kafka/v2/avro"
 
 // ObservationsInserted is the data that is output for each observation batch inserted.
 type ObservationsInserted struct {

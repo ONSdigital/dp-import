@@ -1,6 +1,6 @@
 package events
 
-import "github.com/ONSdigital/go-ns/avro"
+import "github.com/ONSdigital/dp-kafka/v2/avro"
 
 // SearchIndexBuilt contains data related to a search that has just been built.
 type SearchIndexBuilt struct {
