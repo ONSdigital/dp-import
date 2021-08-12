@@ -2,7 +2,8 @@ package events
 
 import "github.com/ONSdigital/dp-kafka/v2/avro"
 
-// CantabularDatasetInstanceStarted is an event produced when a cantabular import is triggered
+// CantabularDatasetInstanceStarted is an event produced when a cantabular
+// import is triggered
 type CantabularDatasetInstanceStarted struct {
 	RecipeID       string `avro:"recipe_id"`
 	InstanceID     string `avro:"instance_id"`
@@ -21,7 +22,8 @@ var cantabularDatasetInstanceStartedSchema = `{
   ]
 }`
 
-// CantabularDatasetInstanceStartedSchema provides an Avro schema for the CantabularDatasetInstanceStarted event
+// CantabularDatasetInstanceStartedSchema provides an Avro schema for the
+// CantabularDatasetInstanceStarted event
 var CantabularDatasetInstanceStartedSchema = &avro.Schema{
 	Definition: cantabularDatasetInstanceStartedSchema,
 }
