@@ -6,8 +6,8 @@ import "github.com/ONSdigital/dp-kafka/v2/avro"
 // dimension options have been imported and the instance has successfully
 // been imported from Cantabular
 type CantabularDatasetInstanceComplete struct {
-	InstanceID    string `avro:"instance_id"`
-	CantabularBob string `avro:"cantabular_blob"`
+	InstanceID     string `avro:"instance_id"`
+	CantabularBlob string `avro:"cantabular_blob"`
 }
 
 var cantabularDatasetInstanceCompleteSchema = `{
