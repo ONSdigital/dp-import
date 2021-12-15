@@ -1,6 +1,6 @@
 package events
 
-import "github.com/ONSdigital/dp-kafka/v2/avro"
+import "github.com/ONSdigital/dp-kafka/v3/avro"
 
 // CantabularDatasetCategoryDimensionImport is an event produced to trigger
 // the import of dimension options for a given dimension from Cantabular

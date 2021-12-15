@@ -1,6 +1,6 @@
 package events
 
-import "github.com/ONSdigital/dp-kafka/v2/avro"
+import "github.com/ONSdigital/dp-kafka/v3/avro"
 
 // InputFileAvailable is an event produced when a new input file is available to import.
 type InputFileAvailable struct {

@@ -1,6 +1,6 @@
 package events
 
-import "github.com/ONSdigital/dp-kafka/v2/avro"
+import "github.com/ONSdigital/dp-kafka/v3/avro"
 
 // DataImportComplete contains the data required for each hierarchy to be imported.
 type DataImportComplete struct {

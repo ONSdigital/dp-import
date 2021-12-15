@@ -1,6 +1,6 @@
 package events
 
-import "github.com/ONSdigital/dp-kafka/v2/avro"
+import "github.com/ONSdigital/dp-kafka/v3/avro"
 
 // CantabularDatasetInstanceStarted is an event produced when a cantabular
 // import is triggered
