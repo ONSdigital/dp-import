@@ -1,6 +1,6 @@
 package events
 
-import "github.com/ONSdigital/dp-kafka/v2/avro"
+import "github.com/ONSdigital/dp-kafka/v3/avro"
 
 // HierarchyBuilt contains data related to a hierarchy that has just been built.
 type HierarchyBuilt struct {
