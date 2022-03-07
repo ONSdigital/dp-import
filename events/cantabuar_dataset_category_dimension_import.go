@@ -19,8 +19,8 @@ var cantabularDatasetCategoryDimensionImportSchema = `{
     {"name": "dimension_id",   "type": "string"},
     {"name": "job_id", "type": "string"},
     {"name": "instance_id", "type": "string"},
-    {"name": "cantabular_blob", "type": "string"}
-    {"name": "is_geography", "type": "bool"}
+    {"name": "cantabular_blob", "type": "string"},
+    {"name": "is_geography", "type": "boolean"}
   ]
 }`
 
