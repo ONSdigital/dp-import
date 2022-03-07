@@ -9,6 +9,7 @@ type CantabularDatasetCategoryDimensionImport struct {
 	InstanceID     string `avro:"instance_id"`
 	DimensionID    string `avro:"dimension_id"`
 	CantabularBlob string `avro:"cantabular_blob"`
+	IsGeography    bool   `avro:"is_geography"`
 }
 
 var cantabularDatasetCategoryDimensionImportSchema = `{
@@ -19,6 +20,7 @@ var cantabularDatasetCategoryDimensionImportSchema = `{
     {"name": "job_id", "type": "string"},
     {"name": "instance_id", "type": "string"},
     {"name": "cantabular_blob", "type": "string"}
+    {"name": "is_geography", "type": "bool"}
   ]
 }`
 
