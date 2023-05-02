@@ -1,6 +1,6 @@
 package events
 
-import "github.com/ONSdigital/dp-kafka/v2/avro"
+import "github.com/ONSdigital/dp-kafka/v3/avro"
 
 // CantabularDatasetInstanceComplete is the event produced when the
 // dimension options have been imported and the instance has successfully
