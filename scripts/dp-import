@@ -1,0 +1,823 @@
+#!/usr/bin/env bash
+
+me=${0##*/}
+
+usage(){
+    echo "$me args..."
+    cat <<'EOFusage'
+
+ID arguments in the following can usually be abbreviated (save typing).
+'args' can be:
+    --env { cmd | cmd-dev }   target env
+    --svc svc_names           target these services only (can repeat, can be "svc1 svc2")
+
+    all                       wipe, re-seed, re-create, submit, publish, ... - do it all
+
+    create                    create an import-job using json to the ImportAPI
+    create_filt [$iid]        create a filter-job with instance_id in json to FilterAPI
+    submit                    change an import-job to state:submitted on the ImportAPI
+    job         $jid          get an import-job from the ImportAPI
+    jobs                      get a list of import-jobs from the ImportAPI
+    inst        [$iid] [-]    get an instance (or all instances) from the DatasetAPI, or GET /dimensions
+    inst_put    $iid $dim     put data to a dimension on an instance (DatasetAPI)
+    filt        [$fid]        get a filter job (or all) from the FilterAPI
+    hier        $hid          get a hierarchy from the HierarchyAPI
+
+    dset        [$dsid]                               get a dataset (or all datasets) from the DatasetAPI
+    dset        $dsid [ $eid [ $vid [ $dimid ] ] ]    get a dataset/edition/version/dimension ('-' adds next sub-uri w/o id)
+    create_dset [$dsid]                               create a dataset with dsid (has default)
+    assoc       $dsid $eid $vid                       change a dataset/version state=associated on the DatasetAPI
+
+    clist       [$clid]                               get a code-list (or all code-lists) from the CodelistAPI
+
+    submitted                         state-filtered: import-jobs<ImportAPI; datasets,instances<DatasetAPI; recipes<RecipeAPI
+    created,completed                 as per 'submitted'
+    associated|published              as per 'submitted', but only checks datasets
+    inst_release  $iid                put {"release_date":"today", "license":"wut"} to instance
+    complete      $iid                put {"state":"completed"} to instance
+    inst_confirm  $iid $eid           put {"state":"edition-confirmed", "edition":"Time-series"} to instance
+    publish       $dsid $eid $vid      set state=published for dataset instance/edition/version
+
+    dim_x     $iid          create a kafka message consumed by the dimension-extractor
+
+    db_wipe                 wipe all DBs (after confirmation!)
+    db                      display all DBs
+
+    tot_ob    $iid $tot     update total_observations via mongo
+    db_ins_ob $iid $inc     increment total_inserted_observations via mongo
+    ins_ob    $iid $inc     create kafka message to increment total_inserted_observations
+
+    inst_to_job  $iid       undoc'd utilities...
+    inst_to_cols $iid
+    inst_to_dims $iid
+    inst_to_col1 $iid
+    inst_like    $iid
+    job_to_file  $jid
+
+    ok|health               query the /healthcheck endpoints
+    tun                     show tunnelling
+
+    neo                     more undoc'd utilities...
+    neo_count
+    neo_nodes
+    cypher_obs
+    mongo_all
+    mongo_wipe
+    add_file
+EOFusage
+}
+
+. g_lib.sh
+
+IMPORT_API_ADDR=${IMPORT_API_ADDR:-localhost:21800}
+IMPORT_API_AUTH_TOKEN=${IMPORT_API_AUTH_TOKEN:-FD0108EA-825D-411C-9B1D-41EF7727F465}
+DATASET_API_ADDR=${DATASET_API_ADDR:-localhost:22000}
+DATASET_API_AUTH_TOKEN=${DATASET_API_AUTH_TOKEN:-$IMPORT_API_AUTH_TOKEN}
+FILTER_API_ADDR=${FILTER_API_ADDR:-localhost:22100}
+FILTER_API_AUTH_TOKEN=${FILTER_API_AUTH_TOKEN:-$IMPORT_API_AUTH_TOKEN}
+HIERARCHY_API_ADDR=${HIERARCHY_API_ADDR:-localhost:22600}
+HIERARCHY_API_AUTH_TOKEN=${HIERARCHY_API_AUTH_TOKEN:-$IMPORT_API_AUTH_TOKEN}
+CODELIST_API_ADDR=${CODELIST_API_ADDR:-localhost:22400}
+CODELIST_API_AUTH_TOKEN=${CODELIST_API_AUTH_TOKEN:-$IMPORT_API_AUTH_TOKEN}
+SEARCH_API_ADDR=${SEARCH_API_ADDR:-localhost:23100}
+SEARCH_API_AUTH_TOKEN=${SEARCH_API_AUTH_TOKEN:-$IMPORT_API_AUTH_TOKEN}
+RECIPE_API_ADDR=${RECIPE_API_ADDR:-localhost:22300}
+ONS_DP_SRC_ROOT=${ONS_DP_SRC_ROOT:-$HOME/go/src/github.com/ONSdigital}
+ONS_DP_FE_ROUTER_URL=${ONS_DP_FE_ROUTER_URL:-http://localhost:20000}
+FLORENCE_URL=${FLORENCE_URL:-http://localhost:8081/florence}
+IMPORT_TRACKER_ADDR=${IMPORT_TRACKER_ADDR:-localhost:21300}
+IMPORT_REPORTER_ADDR=${IMPORT_REPORTER_ADDR:-localhost:22200}
+typeset -a all_apis=( dp-import-api dp-dataset-api dp-filter-api dp-hierarchy-api dp-code-list-api dp-recipe-api dp-search-api )
+# below used for healthchecks
+typeset -a all_endpoints=( ${all_apis[*]} dp-import-tracker dp-import-reporter )
+typeset -a requested_svcs=( )
+
+f_count=0
+
+import_api_dir=$ONS_DP_SRC_ROOT/dp-import-api
+filter_api_dir=$ONS_DP_SRC_ROOT/dp-filter-api
+clist_api_dir=$ONS_DP_SRC_ROOT/dp-code-list-api
+dataset_api_dir=$ONS_DP_SRC_ROOT/dp-dataset-api
+dp_ci_dir=$ONS_DP_SRC_ROOT/dp-ci
+dp_setup_dir=$ONS_DP_SRC_ROOT/dp-setup
+secrets_cmd_dir=$dp_ci_dir/secrets/cmd
+secrets_cmd_dev_dir=$dp_ci_dir/secrets/cmd-develop
+
+# postgres (now unused, but see $legacy)
+import_db_name=ImportJobs
+# set this non-empty if using postgres for above (blank => mongo)
+legacy=
+# used until 31/10/2017
+filter_db_name=FilterJobs
+
+# neo4j
+# cypher_client=neo4j-client
+# cypher_args=neo4j://neo4j@localhost:7687
+cypher_client=cypher-shell
+cypher_args="--format plain"
+
+# mongo (see $legacy)
+mongo_imports_db=imports
+mongo_imports_c=imports
+mongo_datasets_db=datasets
+mongo_datasets_c=datasets
+mongo_instances_db=$mongo_datasets_db
+# mongo_instances_c=$mongo_datasets_c
+mongo_instances_c=instances
+mongo_dimensions_db=$mongo_datasets_db
+mongo_dimensions_c=dimensions
+mongo_dim_options_db=$mongo_datasets_db
+mongo_dim_options_c=dimension.options
+mongo_editions_db=$mongo_datasets_db
+mongo_editions_c=editions
+mongo_versions_db=$mongo_datasets_db
+mongo_versions_c=versions
+mongo_filters_c=filters
+mongo_filters_db=$mongo_datasets_db
+mongo_codelists_c=codelists
+mongo_codelists_db=codelists
+mongo_cmd="mongo --quiet"
+mongo_args=
+mongo_js=$(cat <<EOFjs
+var all={
+    "imports":      {"db":"$mongo_imports_db",      "coll":"$mongo_imports_c"},
+    "instances":    {"db":"$mongo_instances_db",    "coll":"$mongo_instances_c"},
+    "datasets":     {"db":"$mongo_datasets_db",     "coll":"$mongo_datasets_c"},
+    "dimensions":   {"db":"$mongo_dimensions_db",   "coll":"$mongo_dimensions_c"},
+    "dim_options":  {"db":"$mongo_dim_options_db",  "coll":"$mongo_dim_options_c"},
+    "editions":     {"db":"$mongo_editions_db",     "coll":"$mongo_editions_c"},
+    "versions":     {"db":"$mongo_versions_db",     "coll":"$mongo_versions_c"},
+    "codelists":    {"db":"$mongo_codelists_db",    "coll":"$mongo_codelists_c"},
+    "filters":      {"db":"$mongo_filters_db",      "coll":"$mongo_filters_c"}
+}
+EOFjs
+)
+
+#       create_json='{"recipe":"v4","state":"created","files":[{"alias_name":"v4","url":"__s3_file__"}]}'
+#       create_json='{"recipe":"v4","files":[{"alias_name":"v4","url":"__s3_file__"}]}'
+# XXX magic XXX         b944be78-f56d-409b-9ebd-ab2b77ffe187 for the import-api to send direct to dimension-extractor
+create_json='{"recipe":"__recipe_id__","files":[{"alias_name":"v4","url":"'"__s3_file__"'"}]}'
+create_dset_json='{"release_frequency":"yearly", "state":"published", "theme":"population", "title":"CPI" }'
+def_dset_id=931a8a2a-0dc8-42b6-a884-7b6054ed3b68
+inst_release_json='{"release_date":"today"}' #  "license":"wut"}'
+inst_confirm_json='{"state":"edition-confirmed", "edition":"Time-series"}'
+
+create_filt_json='{"instance_id":"<iid>"}'
+
+#   submit_json='{"id":"<job_id>","state":"submitted"}'
+#   submit_json='{"state":"submitted"}'
+state_json='{"state":"__STATE__"}'
+assoc_json='{"state":"associated","collection_id":"95c4669b-3ae9-4ba7-b690-87e890a1c543"}'
+inst_dim_json='{"title":"__TITLE__"}'
+
+add_file_json='{"alias_name":"v4-2","url":"'"__s3_file__"'_22"}'
+json=
+
+curly_put (){ curly -X PUT  "$@";}
+curly_post(){ curly -X POST "$@";}
+curly(){
+        local token=$IMPORT_API_AUTH_TOKEN
+        if   [[ ${@:$#} =~ $DATASET_API_ADDR*    ]]; then token=$DATASET_API_AUTH_TOKEN
+        elif [[ ${@:$#} =~ $IMPORT_API_ADDR*     ]]; then token=$IMPORT_API_AUTH_TOKEN
+        elif [[ ${@:$#} =~ $FILTER_API_ADDR*     ]]; then token=$FILTER_API_AUTH_TOKEN
+        elif [[ ${@:$#} =~ $RECIPE_API_ADDR*     ]]; then token=$RECIPE_API_AUTH_TOKEN
+        elif [[ ${@:$#} =~ $HIERARCHY_API_ADDR*  ]]; then token=$HIERARCHY_API_AUTH_TOKEN
+        elif [[ ${@:$#} =~ $SEARCH_API_ADDR*     ]]; then token=$SEARCH_API_AUTH_TOKEN
+        elif [[ ${@:$#} =~ $CODELIST_API_ADDR*   ]]; then token=$CODELIST_API_AUTH_TOKEN
+        elif [[ ${@:$#} =~ $IMPORT_TRACKER_ADDR* ]]; then token=
+        elif [[ ${@:$#} =~ $IMPORT_REPORTER_ADDR* ]]; then token=
+        else g_warn "Unrecognised URL to determine token for: curly $*"
+        fi
+        g_trace curl -sSH "Content-type: application/json" -H "Internal-Token: $token" "$@"
+                curl -sSH "Content-type: application/json" -H "Internal-Token: $token" "$@"
+}
+
+show_r_js="function show_(r){if(r==null){print('');return;};if(r.hasNext != undefined){while(r.hasNext()){printjson(r.next());}}else{printjson(r)}}"
+ppj_js="function p(r){print(r);};function pj(r){printjson(r)}"
+
+# unused
+cypher_obs1() {
+        local id=$1; id=$(like_to_id instance $id)
+        echo 'MATCH (time:`_'"$id"'_Time`),
+    (geo:`_'"$id"'_Geography`),
+    (aggr:`_'"$id"'_Aggregate`)
+WHERE aggr.value = "cpi1dim1G10100"
+    AND time.value = "Jan-96"
+    AND geo.value = "K02000001"
+WITH time,geo,aggr
+MATCH (o:`_'"$id"'_observation`), (o)-[:isValueOf]->(time),
+    (o)-[:isValueOf]->(geo),
+    (o)-[:isValueOf]->(aggr)
+RETURN o
+LIMIT 2;'
+}
+
+cypher_obs() {
+        local id=$(like_to_id instance $1) col_count=0
+        local cols=$(inst_to_dims $id)
+        declare -A col_as=()
+        echo -en "MATCH\t"
+        col_count=0; for col in $cols; do (( ++col_count > 1 )) && echo -en ",\n\t"
+                local col_key=${col:0:3} col_len=3; while [[ -n "${col_as[$col_key]}" ]]; do col_len++; col_key=${col:0:$col_len}; done; col_as[$col]=$col_key
+                echo -n "(${col_key}:\`_${id}_${col}\`)"
+        done
+        echo -en "\nWHERE\t    "
+        col_count=0; for col in $cols; do (( ++col_count > 1 )) && echo -en '\n\tAND '
+                echo -n "${col_as[$col]}"'.value = ""'
+        done
+        echo -en "\nWITH\t"
+        col_count=0; for col in $cols; do (( ++col_count > 1 )) && echo -n ", "
+                echo -n "${col_as[$col]}"
+        done
+        echo -en "\nMATCH\t(obs:\`_${id}_observation\`)"
+        for col in $cols; do
+                echo -en ",\n\t(obs)-[:isValueOf]->(${col_as[$col]})"
+        done
+        echo -e "\nRETURN obs\nLIMIT 2;"
+}
+
+neo(){
+        local id=$1; id=$(like_to_id instance $id)
+        cypher_obs $id
+        yorn Run above against Neo4j... || return
+        cypher_obs $id | $cypher_client $cypher_args
+        # yorn Pretty print... || return
+        # cypher_obs | $cypher_client $cypher_args | perl -nE '$.==2 and s/""/"/g and s/(^"|"$)//g and print'
+}
+
+neo_do(){    while [[ -n $1 ]]; do yorn              --x $cypher_client $cypher_args "$1" || return; shift; done; }
+neo_do_no(){ while [[ -n $1 ]]; do yorn --no --no-ok --x $cypher_client $cypher_args "$1" || return; shift; done; }
+neo_count(){ local id=$(like_to_id instance $1); neo_do "MATCH (o:\`_${id}_observation\`) RETURN COUNT(o);"; }
+neo_wipe(){
+        yorn --xc brew services stop neo4j
+        yorn --xc rm -rf /usr/local/Cellar/neo4j/*/libexec/data/databases/graph.db && brew services start neo4j
+        neo_do_no "MATCH (n) DETACH DELETE n;"
+}
+#   neo_wipe(){ neo_do "MATCH (n) OPTIONAL MATCH (n)-[r]-() DELETE r,n;"; }
+#   neo_wipe(){ neo_do "MATCH ()-[r]-() DELETE r;" "MATCH (n) DELETE n;"; }
+#   neo_nodes(){ neo_do "MATCH node(*) RETURN COUNT(n) AS node_count;"; }
+neo_nodes(){ local id=$(like_to_id instance $1); [[ -z $id ]] && return 1; neo_do "MATCH (n:\`_${id}_observation\`) RETURN COUNT(n) AS obs_count;"; }
+neo_all(){ neo_nodes "$@"; neo_do "MATCH (n) RETURN COUNT(n) AS node_count;"; }
+
+create() {
+        local url= instance_id= job_id= offer_submit=1 do_submit=
+        if   [[ $1 == --no-submit ]]; then shift; offer_submit=
+        elif [[ $1 == --submit    ]]; then shift; offer_submit=; do_submit=1
+        fi
+        g_trace "New import job... "
+        local send_js=${create_json//__s3_file__/$s3_file}
+        send_js=${send_js//__recipe_id__/$def_recipe_id}
+        show_json "$send_js" .
+        yorn POST above to API $IMPORT_API_ADDR/jobs || return
+        local out=$(curly_post -id "$send_js" $IMPORT_API_ADDR/jobs)
+        get_json "$out"
+        if [[ -n $legacy ]]; then
+                instance_id=$(echo "$json" | jq -r '.instances[0].id')
+        else
+                instance_id=$(echo "$json" | jq -r '.links.instances[0].id')
+                [[ $instance_id == null ]] && instance_id=
+        fi
+        job_id=$(echo "$json" | jq -r '.id')
+        g_trace Got job_id=$job_id instance_id=$instance_id
+        if [[ -n $instance_id ]]; then
+                inst $instance_id
+                if [[ -n $job_id ]]; then
+                        if [[ -n $offer_submit ]]; then
+                                yorn --comment "Consider submitting job" --no --xc $me submit $job_id
+                        elif [[ -n $do_submit ]]; then
+                                yorn --xc $me submit $job_id
+                        fi
+                fi
+        fi
+}
+
+create_filt() {
+        local instance_id=$(like_to_id instance "$1"); shift
+        local create_filt_json_iid=${create_filt_json//<iid>/$instance_id}
+        show_json "$create_filt_json_iid" .
+        yorn "Create filter job... send above: POST $FILTER_API_ADDR/filters" || return
+        local out=$(curly_post -id "$create_filt_json_iid" $FILTER_API_ADDR/filters)
+        get_json "$out"
+        # instance_id=$(echo "$json" | jq -r '.links.instances[0].id')
+        # [[ $instance_id == null ]] && instance_id=
+        # g_warn "i_id=:$instance_id:"
+        # [[ -n $instance_id ]] && inst $instance_id
+}
+create_filt_opt() {
+        local filt_id=$(like_to_id filter "$1"); shift
+        local out=$(curly_post -id "$create_filt_json_iid" $FILTER_API_ADDR/filters)
+        get_json "$out"
+}
+
+create_dset(){
+        local dset_id=$def_dset_id; if [[ -n $1 ]]; then dset_id=$1; shift; fi
+        local url=$(gen_url datasets $dset_id)
+        show_json "$create_dset_json" .
+        yorn "Create dataset... POST above to $url" || return
+        local out=$(curly_post -id "$create_dset_json" $url)
+        get_json "$out"
+}
+
+gen_url(){
+        local sub_url=$1; shift
+        [[ $sub_url = hierarchys ]] && sub_url=hierarchies
+        if   [[ $1 == */* ]]; then
+                # return given URL
+                g_warn genurl "$1"
+                echo $1
+                return
+        elif [[ $sub_url != */* ]]; then
+                if   [[ :filters:instances:datasets:dimensions:editions:versions:contacts:hierarchies:code-lists: == *:$sub_url:* ]]; then
+                        local next_uri= # colon-separated and -terminated
+                        if   [[ :datasets: == *:$sub_url:* && -n $1 ]]; then
+                                # dataset
+                                next_uri=$sub_url:editions:versions:dimensions:
+                                sub_url=$DATASET_API_ADDR
+                        elif [[ :hierarchies: == *:$sub_url:* ]]; then
+                                # hierarchy
+                                next_uri=$sub_url:__:__:__
+                                sub_url=$HIERARCHY_API_ADDR
+                        elif [[ $sub_url == filters ]]; then
+                                # filter
+                                if [[ -n $1 ]]; then
+                                        next_uri=$sub_url:dimensions:options:
+                                        sub_url=$FILTER_API_ADDR
+                                else
+                                        sub_url=$FILTER_API_ADDR/$sub_url
+                                fi
+                        elif [[ :code-lists: == *:$sub_url:* ]]; then
+                                # code-list
+                                if [[ -n $1 ]]; then
+                                        next_uri=$sub_url:codes:
+                                        sub_url=$CODELIST_API_ADDR
+                                else
+                                        sub_url=$CODELIST_API_ADDR/$sub_url
+                                fi
+                        elif [[ :instances: == *:$sub_url:* && -n $1 ]]; then
+                                # instance - dim args
+                                next_uri=$sub_url:dimensions:
+                                sub_url=$DATASET_API_ADDR
+                        else
+                                # instance - no args
+                                sub_url=$DATASET_API_ADDR/$sub_url
+                        fi
+                        while [[ -n $next_uri && -n $1 ]]; do
+                                sub_url=$sub_url/${next_uri%%:*}
+                                sub_url=${sub_url%/__*} # remove trailing "/__level1"
+                                next_uri=${next_uri#*:}
+                                [[ $1 != '-' ]] && sub_url=$sub_url/$1
+                                shift
+                        done
+                elif [[ $sub_url == recipes ]]; then
+                        sub_url=$RECIPE_API_ADDR/$sub_url
+                else
+                        # sub_url = jobs,instances
+                        sub_url=$IMPORT_API_ADDR/$sub_url # default to ImportAPI
+                fi
+        fi
+        [[ -n $1 ]] && sub_url=$sub_url/$1
+        echo $sub_url
+}
+api_raw(){      local method=$1 url=$2; local out=$(curly  -X $method $url); echo "$out"; }
+api_raw_hdrs(){ local method=$1 url=$2; local out=$(curly -iX $method $url); echo "$out"; }
+
+getter() {
+        local db_type=$1 id_or_url=$2; shift 2; local id_or_url_orig=$id_or_url
+        if [[ -n $id_or_url ]]; then id_or_url=$(like_to_id $db_type $id_or_url); if [[ -z $id_or_url ]]; then : g_warn getter got empty: like_to_id $db_type $id_or_url_orig; return 1; fi; fi
+        id_or_url=$(gen_url ${db_type}s "$id_or_url" "$@")
+        g_trace "Getting ${db_type} info... $id_or_url "
+        api_raw GET $id_or_url
+}
+getter_json() {  local jq_args=$1; shift; local o=$(getter "$@"); [[ -z $o ]] && return 1; echo "$o" | jq $jq_args; }
+inst()  {        getter_json . instance   "$@"; }
+dset()  {        getter_json . dataset    "$@"; }
+hier()  {        getter_json . hierarchy  "$@"; }
+filt()  {        getter_json . filter     "$@"; }
+clist() {        getter_json . code-list  "$@"; }
+inst_to_job()  { getter_json "-r .links.job.id" instance "$@"; }
+inst_to_cols() { getter_json "-r .headers"      instance "$@"; }
+inst_to_all()  { local o=$(getter instance   "$@"); [[ -z $o ]] && return 1; echo "$o" | perl -MJSON -E '{local $/; $h=decode_json <>; $col=0; for my $h (@{ $hash->{headers} }){ $col++; if ($col==1) { $x=($h =~ s/V4_//r); say "$col\tx=$x\t$h" if 0; next; } if ($col<=$skip) { say "$col\tskip\y$h" if 0; next; } say $h if ($col-$x)%2; } }'; }
+inst_to_dims() { local col1=$(inst_to_col1 "$@") o=$(getter instance "$@"); [[ -z $o ]] && return 1; echo "$o" | perl -MJSON -E '{local $/; $h=decode_json <>; for(my $c=1+'"$col1"'; $c<@{$h->{headers}}; $c+=2){ say $h->{headers}->[$c]; } }'; }
+inst_to_col1() { local o=$(getter instance   "$@"); [[ -z $o ]] && return 1; echo "$o" | perl -MJSON -E '{local $/; $h=decode_json <>; say 1+($h->{headers}->[0] =~ s/V4_//r);}'; }
+job_to_file() { getter job "$@" | jq -r '.files[0].url' -; }
+jobs_(){ local url=$1; shift; getter job $url | jq .; }
+recipe() { local url=$1; shift; getter recipe $url | jq .; }
+
+inst_put()  {
+        local url=$1 dim=$2; shift 2
+        url=$(like_to_id instance $url); url=$(gen_url instances $url $dim)
+        [[ -z $url ]] && g_die 2 No id found for inst
+        date_time=$(date '+%Y-%m-%d %H:%M:%S')
+        g_trace "Submitting (title=>\"$dim $date_time\"): PUT $url"
+        local out=$(curly_put -id "${inst_dim_json/__TITLE__/$dim $date_time}" $url)
+        get_json "$out"
+}
+state_put() {
+        local new_state=$1 o_url=$2 res=0; shift 2
+        local poss_target="job instance"; if [[ $new_state == published ]]; then poss_target=dataset; fi
+        for o_type in $(echo $poss_target); do
+                local url=$(like_to_id $o_type $o_url); if [[ -z $url ]]; then g_warn No id found for $o_type from $o_url; continue; fi
+                url=$(gen_url ${o_type}s $url "$@")
+                g_trace "Submitting $o_type (state=>$new_state): PUT $url "
+                local out=$(curly_put -id "${state_json/__STATE__/$new_state}" $url)
+                get_json "$out"
+                res=$?
+                break # have seen an id, so skip any further poss_target
+        done
+        return $res
+}
+submit(){ state_put submitted "$@"; shift; }
+assoc(){ local url=$1; shift; url=$(like_to_id dataset $url); url=$(gen_url datasets $url "$@"); g_trace "Associating dataset (state=>associated): PUT $url "
+        local out=$(curly_put -id "$assoc_json" $url)
+        get_json "$out"
+}
+
+inst_release(){ local url=$1; shift; url=$(like_to_id instance $url); url=$(gen_url instances $url "$@"); g_trace "Updating instance ($inst_release_json): PUT $url "
+        local out=$(curly_put -id "$inst_release_json" $url)
+        get_json "$out"
+}
+
+inst_confirm(){ local url=$1; shift; url=$(like_to_id instance $url); url=$(gen_url instances $url "$@"); g_trace "Updating instance ($inst_confirm_json): PUT $url "
+        local out=$(curly_put -id "$inst_confirm_json" $url)
+        get_json "$out"
+}
+
+add_file(){ local url=$1; shift; url=$(like_to_id job $url); url=$(gen_url jobs $url)/files; g_trace "Adding file: PUT $url"
+        local send_js=${add_file_json//__s3_file__/$s3_file}
+        show_json "$send_js" .
+        local out=$(curly_put -id "$send_js" $url)
+        get_json "$out"
+}
+
+get_json(){
+        local out=$1 res=0; shift
+        echo "out=:$out:" >&2
+
+        # XXX $json is global!
+        json="$(echo "$out" | perl -nE 'if (/^\s*$/...eof()){ s/^[\r\n]+//m; print;}')"
+
+        if ! show_json "$json" .; then
+                res=1
+                # Bad json, but HTTP ok?
+                if [[ $out == "HTTP/1.1 2"* ]]; then
+                        g_trace "HTTP Response looks good, though: $(echo "$out" | head -1)"
+                        res=0
+                fi
+        fi
+        return $res
+}
+show_json(){
+        local json=$1; shift
+        if [[ $json == "{"* ]]; then
+                echo "$json" | jq "$@"
+        elif [[ $json == "" ]]; then
+                g_warn "No json/body"
+                return 1
+        else
+                g_warn "Bad json '$json'"
+                return 1
+        fi
+}
+states(){ local url= otype=$1 states=$2; shift 2; url=$(gen_url $otype)\?state=$states; g_trace "Getting $otype: GET $url"
+        local out=$(curly -i "$url")
+        get_json "$out"
+}
+
+do_mongo_raw() {
+        local temp_js=/tmp/temp_js_$$_$f_count.js res=0 js=$1; shift; let f_count++
+        echo "$js" > $temp_js # grep . $temp_js /dev/null >&2
+        g_trace   $mongo_cmd $mongo_args "$@" $temp_js # "$(cat $temp_js)"
+        if ! eval $mongo_cmd $mongo_args "$@" $temp_js | perl -pE 's/ObjectId\("([^"]+)"\)/"oId_$1"/g;'; then res=$? ;grep --color . $temp_js /dev/null >&2; fi
+        rm $temp_js
+        return $res
+}
+do_mongo_r() { local js=$1; shift; do_mongo_raw "$mongo_js;$ppj_js;$show_r_js;$js;" "$@"; }
+do_mongo() { local js=$1 m_db=$2 orig_m_args=$mongo_args; shift 2
+        if [[ $mongo_args == *authSource* ]]; then
+            mongo_args=${mongo_args/?authSource//$m_db?authSource}
+            m_db=
+        fi
+        do_mongo_raw "$mongo_js;$ppj_js;r=$js;$show_r_js;show_(r);" "$@" $m_db
+        mongo_args=$orig_m_args
+}
+do_mongo_all() { local js=$1; shift; do_mongo_raw "$mongo_js;$ppj_js;$show_r_js;for(var d in all){var db=db.getSiblingDB(all[d].db);coll=db.getCollection(all[d].coll);$js;}" "$@"; }
+do_mongo_imports() { do_mongo "$@" $mongo_imports_db; }
+do_mongo_datasets() { do_mongo "$@" $mongo_datasets_db; }
+like_to_id() {
+        if [[ $2 == */* ]]; then echo $2; g_warn l2id "[$(g_colr cyan $2)]"; return; fi # return given URL
+        if [[ -n $legacy ]]; then
+                psql -U dp $import_db_name -Atc "SELECT ${1}id FROM ${1}s WHERE ${1}id LIKE '$2%'"
+        elif [[ $1 == recipe ]]; then
+                api_raw GET $RECIPE_API_ADDR/recipes | jq -r '.items[0].id'
+        elif [[ :dataset: == *:$1:* ]]; then
+                dset_json=$(do_mongo_datasets "db.getCollection('$mongo_datasets_c').findOne({_id:/^$2/}, {_id:1})")
+                show_json "$dset_json" -r ._id
+        elif [[ :filter: == *:$1:* ]]; then
+                do_mongo_datasets "db.getCollection('$mongo_filters_c').findOne({_id:/^$2/}, {_id:1})" | jq -r ._id
+                # psql -U dp $filter_db_name -Atc "SELECT ${1}JobId FROM ${1}s WHERE ${1}JobId LIKE '$2%'"
+        elif [[ :instance: == *:$1:* ]]; then
+                # g_warn iid=$2
+                do_mongo_datasets "db.getCollection('$mongo_instances_c').findOne({id:/^$2/}, {id:1})" | jq -r .id
+        elif [[ :search:hierarchy:code-list: == *:$1:* ]]; then
+                echo $2
+                return
+        else # job
+                # 'print(JSON.stringify(db.s3.getIndexes(), null, 8),JSON.stringify(db.meta.getIndexes(), null, 8))'
+                # echo do_mongo_imports "db.getCollection('$mongo_imports_c').find({id:/^$2/}, {id:1})"
+                # g_info $mongo_imports_c $2 $(do_mongo_imports "db.getCollection('$mongo_imports_c').find({id:/^$2/}, {id:1})")  >&2
+                do_mongo_imports "db.getCollection('$mongo_imports_c').findOne({id:/^$2/}, {id:1})" | jq -r .id
+        fi
+}
+inst_like(){
+        if [[ -n $legacy ]]; then
+                psql -U dp $import_db_name -Atc 'SELECT instance FROM instances WHERE instanceid LIKE '"'$1%'" | jq .
+        else
+                do_mongo_datasets "db.getCollection('$mongo_instances_c').find({id:/^$2/})" | jq .
+        fi
+}
+tot_ob() {
+        local id=$1 obs=$2; shift 2; [[ -z $obs ]] && obs=1000; id=$(like_to_id instance $id)
+        inst $id
+        if [[ -n $legacy ]]; then
+                psql -U dp $import_db_name -c 'UPDATE instances SET instance=instance || JSONB('"'"'{"total_observations":'"${obs}}'"') WHERE instanceid = '"'$id'"
+        else
+                do_mongo_datasets "db.getCollection('$mongo_instances_c').update({id:'$id'}, {\$set:{total_observations:$obs}})" | jq .
+        fi
+        inst $id
+}
+db_ins_ob() {
+        local id=$1 obs=$2; shift 2; [[ -z $obs ]] && obs=200; id=$(like_to_id instance $id)
+        if [[ -n $legacy ]]; then
+                psql -U dp $import_db_name -c 'UPDATE instances SET instance=instance || JSONB('"'"'{"total_inserted_observations":'"${obs}}'"') WHERE instanceid = '"'$id'"
+        else
+                do_mongo_datasets "db.getCollection('$mongo_instances_c').update({id:'$id'}, {\$inc:{total_inserted_observations:$obs}})" | jq .
+        fi
+        inst $id
+}
+avro(){
+    local inst_id=$1 job_id= file_url=; shift
+    cd $ONS_DP_SRC_ROOT/dp-import || exit 2
+    inst_id=$(like_to_id instance $inst_id); if [[ -z $inst_id ]]; then g_warn Cannot get instance id; return 1; fi
+    job_id=$(inst_to_job $inst_id);  if [[ -z $job_id ]]; then g_warn Cannot get job_id from instance id $inst_id; return 1; fi
+    file_url=$(job_to_file $job_id); if [[ -z $file_url ]]; then g_warn Cannot get file_url from job: $job_id instance: $inst_id; return 1; fi
+    HUMAN_LOG=1 go run -race cmd/avro-kafka/main.go --kafka "$KAFKA_ADDR" --s3 "$file_url" --id "$inst_id" "$@"
+}
+dim_x(){ avro $1 --topic input-file-available; }
+ins_ob(){ avro $1 --topic import-observations-inserted --inserts $2; }
+
+list_db(){ node -e "$mongo_js;for(db in all){ console.log(db); }"; }
+pg_all() {
+    if   [[ -n $legacy ]]; then yorn --x psql -U dp $import_db_name -c 'SELECT * FROM jobs;'    -c 'SELECT * FROM instances;' -c 'SELECT * FROM dimensions;' -c 'SELECT COUNT(*) FROM dimensions;'
+    elif [[ -n $nopeXX ]]; then yorn --x psql -U dp $filter_db_name -c 'SELECT * FROM filters;' -c 'SELECT * FROM downloads;' -c 'SELECT * FROM dimensions;' -c 'SELECT COUNT(*) FROM dimensions;'
+    fi
+}
+pg_wipe()   {
+    if   [[ -n $legacy ]]; then yorn --x psql -U dp $import_db_name -f $import_api_dir/scripts/InitDatabase.sql
+    elif [[ -n $nopeXX ]]; then yorn --x psql -U dp $filter_db_name -f $filter_api_dir/scripts/InitDatabase.sql
+    fi
+}
+# mongo_all_old (){ yorn --x do_mongo_r "db=db.getSiblingDB('$mongo_imports_db');p('coll $mongo_imports_c');r=db.getCollection('$mongo_imports_c').find();show_(r);db=db.getSiblingDB('$mongo_datasets_db');p('coll $mongo_instances_c');r=db.getCollection('$mongo_instances_c').find();show_(r)"; }
+# mongo_all (){ yorn --xc do_mongo_all "if(d!='dimensions'){p(d);r=coll.find();show_(r)}"; yorn --xc do_mongo_all "if(d=='dimensions'){p(d);r=coll.find();show_(r)}"; }
+mongo_all (){ local d= arg=
+    while [[ :--count:--wipe: == *":$1:"* ]]; do arg=$1; shift; done
+    for d in $(list_db); do
+        if [[ -n $1 ]]; then
+            [[ " $@ " == *" $d "* ]] || continue
+        fi
+        if [[ $arg == --count ]]; then
+                g_info $(g_colr bright_cyan $d) count: $(g_colr yellow $(do_mongo_all "if(d=='$d'){count=coll.count();show_(count)}"))
+        elif [[ $arg == --wipe ]]; then
+            yorn --comment "db $(g_colr bright_cyan $d)" --xc do_mongo_all "if(d=='$d'){show_(coll.deleteMany({}))}"
+        else
+            yorn --comment "db $(g_colr bright_cyan $d)" --xc do_mongo_all "if(d=='$d'){r=coll.find();show_(r)}"
+        fi
+    done
+}
+# mongo_wipe(){ yorn --xc do_mongo_all "p(d);show_(coll.deleteMany({}));"; }
+mongo_init(){
+    cd $clist_api_dir/scripts   && yorn --x --comment $clist_api_dir/scripts   ./setup.sh
+    cd $dataset_api_dir/scripts && yorn --x --comment $dataset_api_dir/scripts ./InitDatabase.sh
+}
+mongo_wipe(){ yorn --no --xc do_mongo_all "p(d);show_(coll.deleteMany({}));" || mongo_all --wipe; }
+db     (){ mongo_all --count "$@"; mongo_all "$@";  pg_all;  neo_all; }
+db_init(){ mongo_init; }
+db_wipe(){ mongo_wipe; pg_wipe; neo_wipe; }
+tester() { do_mongo_imports "db.getCollection('$mongo_imports_c').find({id:/^$1/}, {id:1})"; }
+#tester() { like_to_id job 1d; }
+health(){ local ep=
+    for ep in ${all_endpoints[*]}; do
+        is_requested_svc $ep || continue
+        set_endpoint_vars $ep $d
+        yorn --comment $ep --x api_raw_hdrs GET $ep_addr/healthcheck
+    done
+}
+ok(){ health "$@"; }
+set_s3() {
+    def_recipe_id="b944be78-f56d-409b-9ebd-ab2b77ffe187"
+    # s3_file='s3://dp-dimension-extractor/OCIGrowth.csv'
+    # s3_file='s3://dp-dimension-extractor/EXAMPLE_V4-coicopcomb.csv'
+    # s3_file='https://s3-eu-west-1.amazonaws.com/dp-frontend-florence-file-uploads/2470609-EXAMPLE_V4-coicopcomb-inc-geo-codecsv'
+    # s3_file='s3://dp-dimension-extractor/EXAMPLE_V4-Internal Migration Done.csv'
+    # s3_file='https://s3-eu-west-1.amazonaws.com/dp-frontend-florence-file-uploads/2470609-EXAMPLE_V4-coicopcomb-inc-geo-code2csv'
+    # no longer there...  s3_file='s3://dp-frontend-florence-file-uploads/2470609-EXAMPLE_V4-coicopcomb-inc-geo-code2csv'
+    # to 2017-11-15 s3_file='s3://dp-dimension-extractor/EXAMPLE_V4-coicopcomb-inc-geo-code.csv'
+    # s3_file='file:///Users/gedge/Downloads/work/ons/CODED-SAPE-Admin 2013-2015.csv'
+    s3_file='s3://dp-dimension-extractor/EXAMPLE_V4-coicopcomb-inc-geo-code.csv'
+    if [[ $1 == --sape ]]; then
+        def_recipe_id="8ef16b08-fef5-4bd3-8300-8066b0c777ce"
+        # s3_file='file:///Users/gedge/Downloads/work/ons/CODED-SAPE-Admin+2013-2015.csv'
+        s3_file='s3://dp-dimension-extractor/CODED-SAPE-Admin+2013-2015.csv'
+    fi
+}
+
+set_endpoint_vars() {
+    # globals set: $ep_var $ep_addr $ep_auth_token
+    local ep=$1 d=$2 ep_as_var=; shift 2 # $d is dir for secrets
+    ep_as_var=${ep^^}; ep_as_var=${ep_as_var//-/_}; ep_as_var=${ep_as_var#DP_}; if [[ $ep_as_var == CODE_LIST_API ]]; then ep_as_var=CODELIST_API; fi # uppercase s/-/_/g s/^dp-//
+    ep_var=${ep_as_var}_ADDR
+    ep_var_re="$ep_var|${ep_as_var}_URL"
+    if [[ $ep == dp-code-list-api ]]; then ep_var_re="$ep_var_re|CODE_LIST_API_URL"; fi # sigh
+    local ep_auth_var=${ep_as_var}_AUTH_TOKEN
+    if [[ -n $d ]]; then
+        ep_addr=$(perl -nE 'our $b;if (/^\s*"(?:'"$ep_var_re"')":\s*"(?:http:\/\/)?(.+)",?\s*$/x) { my $h_p=$1; $b=$h_p if $b eq "" or $h_p !~ /\$/; if ($b !~ /\$/) { say $b;exit; } }END{say $b}' $d/*.json)
+        ep_auth_token=$(perl -nE '/^\s*"'"$ep_auth_var"'  ":\s*"([^\$]+)",?\s*$/x and say $1 and exit' $d/*.json)
+        if [[ -z $ep_auth_token ]]; then
+            [[ :dp-hierarchy-api:dp-code-list-api:dp-recipe-api: == *:$ep:* ]] || g_die 2 "Could not get address from grep '$ep_auth_var' $d/*.json"
+        else
+            g_trace $ep_auth_var=${ep_auth_token}
+            eval    $ep_auth_var=\$ep_auth_token
+        fi
+    else
+        eval ep_addr=\$$ep_var
+        eval ep_auth_token=\$$ep_auth_var
+    fi
+}
+is_requested_svc() {
+        local svc=$1 s=; shift
+        [[ ${#requested_svcs[*]} -eq 0 ]] && return 0
+        for s in ${requested_svcs[@]}; do
+                [[ $s == $svc ]] && return 0
+        done
+        return 1
+}
+
+last_twixt=
+twixt(){
+        local yorn= col=green res=$1 next=$2; shift 2
+        if [[ $res != 0 ]]; then col=red; fi
+        yorn --any "Done $(g_colr $col $res: $last_twixt) Next: $(g_colr bright_cyan $next)" $@
+        last_twixt=$next
+}
+
+set_s3
+
+do=$1; res=0; shift
+while [[ -n $do ]]; do
+    if   [[ :--coicop:--sape: == *:$do:* ]]; then
+            set_s3 $do
+            continue
+    elif [[ :-h:--help:help: == *:$do:*  ]]; then
+            usage
+            exit
+    elif [[ $do == --svc ]]; then
+            newly_requested_svcs=$1; shift
+            for r_svc in $newly_requested_svcs; do
+                    requested_svcs+=( $r_svc )
+            done
+    elif [[ $do == --env ]]; then
+            aws_env=$1; shift
+            [[ :cmd:cmd-dev:cmd-develop: == *:$aws_env:* ]] || g_die 2 Bad env: $aws_env
+            [[ cmd-dev == $aws_env ]] && aws_env=cmd-develop
+            d=$secrets_cmd_dev_dir; port_pre=2; if [[ $aws_env == cmd ]];then d=$secrets_cmd_dir; port_pre=5; fi
+
+            nomad_token_file=~/Documents/work/ons/env/$aws_env/nomad.gpg.asc
+            if [[ -f $nomad_token_file ]]; then export NOMAD_TOKEN=$(gpg -qd $nomad_token_file); fi
+
+            neo_host=neo4j-a.$aws_env.ons
+            mongo_host=mongodb-a.$aws_env.ons
+            ip_re='BEGIN{$ip_re=qr/(?<ip>10(?:\.\d{1,3}){3})/;}'
+
+            kafka_addr=$(    perl -nE '/^\s*"KAFKA_ADDR":\s*"(.+)",?\s*$/ and say $1 and exit' $d/*.json)
+            g_trace $aws_env KAFKA_ADDR=$kafka_addr
+
+            neo_url_orig=$(  grep    'bolt://' $d/*.json | perl -nE "$ip_re"'m!  "(         bolt   ://.*@ 10\.[0-9.]+:        \d+)",?$ !x and print and exit')
+            neo_url=$(       grep    'bolt://' $d/*.json | perl -nE "$ip_re"'s!.*"(?<pre_ip>bolt   ://.*@)10\.[0-9.]+:(?<port>\d+)",?$ !$+{pre_ip}127.0.0.1:'"$port_pre"'$+{port}!x and print and exit')
+            mongo_url_orig=$(grep 'mongodb://' $d/*.json | perl -nE "$ip_re"'m!  "(         mongodb://.*@ 10\.[0-9.]+:        \d+)",?$ !x and print and exit')
+            mongo_url=$(     grep 'mongodb://' $d/*.json | perl -nE "$ip_re"'s!.*"(?<pre_ip>mongodb://.*@)10\.[0-9.]+:(?<port>\d+)",?$ !$+{pre_ip} . "127.0.0.1:" . ($+{port}+1)!ex and print and exit')
+
+            env_neo_host_port=$(    echo $neo_url_orig   | perl -pE "$ip_re"'s/.*@(10\.[0-9.]+:\d+).*/$1/')
+            local_env_neo_port=$(   echo $neo_url        | perl -pE "$ip_re"'s/.*@(?:\d+\.[0-9.]+|localhost):(\d+).*/$1/')
+            env_mongo_host_port=$(  echo $mongo_url_orig | perl -pE "$ip_re"'s/.*@(10\.[0-9.]+:\d+).*/$1/')
+            local_env_mongo_port=$( echo $mongo_url      | perl -pE "$ip_re"'s/.*@(?:\d+\.[0-9.]+|localhost):(\d+).*/$1/')
+
+            cypher_args=${cypher_args}" -a $neo_url"
+            mongo_args=${mongo_args}" $mongo_url?authSource=admin"
+            g_trace $cypher_client $cypher_args
+            g_trace $mongo_cmd     $mongo_args
+
+            tuns_pub=
+            tuns_web=
+            for api in ${all_apis[*]}; do
+                    is_requested_svc $api || continue
+                    set_endpoint_vars $api $d
+                    remote_port=${ep_addr##*:}
+                    [[ -z $remote_port ]] && g_die 2 "Could not get address from egrep '$ep_var_re' $d/*.json"
+                    local_port=${remote_port}
+                    remote_host=localhost
+                    g_trace $ep_var=localhost:$local_port
+                    eval    $ep_var=localhost:$local_port
+                    tuns_pub="${tuns_pub} -L $local_port:$remote_host:$remote_port"
+            done
+
+            # add nomad tunnel
+            tuns_pub="${tuns_pub} -L 4646:localhost:4646"
+
+            # add kafka tunnel, update env var
+            tun_kafka_port=29092
+            KAFKA_ADDR=localhost:$tun_kafka_port
+            g_trace export KAFKA_ADDR=$KAFKA_ADDR
+            tuns_pub="${tuns_pub} -L $tun_kafka_port:10.202.3.109:9092"
+
+            [[ -z $tuns_pub && -z $tuns_web ]] && g_die 2 No tuns
+            g_trace tuns_pub = $tuns_pub
+            g_trace tuns_web = $tuns_web
+
+    elif [[ $do == tun                   ]]; then
+            [[ -n $neo_host ]] || g_die 2 No env specified
+            echo screen -t tun-$neo_host   ssh -L $local_env_neo_port:$env_neo_host_port     $neo_host
+            echo screen -t tun-$mongo_host ssh -L $local_env_mongo_port:$env_mongo_host_port $mongo_host
+            if   [[ $aws_env == cmd-develop ]]; then
+                    ssh_to_pub=10.202.4.74 # TODO
+                    ssh_to_web=10.202.7.104 # TODO
+            elif [[ $aws_env == cmd ]]; then
+                    g_warn IPs are wrong...
+                    ssh_to_pub=10.201.1.1 # TODO XXX
+                    ssh_to_web=10.201.0.0 # TODO XXX
+            fi
+            [[ -z $tuns_pub ]] || echo screen -t tun-pub-$aws_env ssh $tuns_pub $ssh_to_pub
+            [[ -z $tuns_web ]] || echo screen -t tun-web-$aws_env ssh $tuns_web $ssh_to_web
+
+    elif [[ :job:jobs: == *:$do:*        ]]; then
+            if ! jobs_ "$@"; then res=1; break; fi
+            set --
+
+    elif [[ :all: == *:$do:*             ]]; then
+            db_wipe
+            db_init
+            last_twixt=db_init
+            twixt $? create_dset
+            create_dset
+            twixt $? "Please upload instance to florence: $FLORENCE_URL/datasets $(g_colr yellow "or agree to 'POST'/create+submit, below")"
+            # start the import by marking job as submitted
+            create --submit
+
+            inst_id=$(inst | jq -r '.items[-1].id')
+            if [[ -z $inst_id ]]; then read -p "Found no inst_id ... please supply one: " inst_id; else g_trace "Got instance_id: [$inst_id]"; fi
+            inst $inst_id
+
+            # PST take over to publish...
+            twixt $? Release
+            inst_release $inst_id
+
+            # Complete wasn't needed by 2018-01-08
+            # twixt $? Complete
+            # state_put completed $inst_id
+
+            twixt $? Edition-confirm
+            inst_confirm $inst_id
+            ver_url=$(inst $inst_id | jq -r '.links.version.href')
+            if [[ -z $ver_url ]]; then read -p "Found no ver_url ... please supply one: " ver_url; fi
+            g_info Version URL: $ver_url
+            twixt $? Assoc
+            assoc $ver_url
+            twixt $? Publish
+            state_put published $ver_url
+            twixt $? "Check dataset at: $ONS_DP_FE_ROUTER_URL/datasets/$def_dset_id"
+
+    elif [[ $do == test                                   ]]; then
+            eval $mongo_cmd $mongo_args $mongo_imports_db --eval \""db.getCollection('$mongo_imports_c').find()"\"
+    elif [[ :complete: == *:$do:*                         ]]; then
+            state_put completed "$@"
+    elif [[ :publish: == *:$do:*                          ]]; then
+            state_put published "$@"
+    elif [[ :submitted:created:completed: == *:$do:*      ]]; then
+            for d_type in jobs instances datasets recipes; do
+                states $d_type $do "$@"
+            done
+    elif [[ :associated:published: == *:$do:*             ]]; then
+            states datasets $do "$@"
+    elif [[ :create:tester:inst:inst_to_job:inst_to_cols:inst_to_dims:inst_to_col1:inst_like:inst_release:inst_confirm:inst_put:job_to_file: == *:$do:* \
+                || :dset:assoc:filt:create_filt:create_filt_opt:create_dset:hier:clist: == *:$do:* \
+                || :tot_ob:db_ins_ob:ins_ob:submit:db_wipe:db:db_init:mongo_init:dim_x:neo:neo_count:neo_nodes:cypher_obs:mongo_all:mongo_wipe: == *:$do:* \
+                || :add_file:health:ok:recipe: == *:$do:* ]]; then
+            if ! $do "$@"; then res=1; break; fi
+            set --
+    else
+            usage >&2
+            g_die 2 Do not recognise arg: $do
+    fi
+    res=$?; (( res > 0 )) && g_die $res "$do failed: $res"
+    do=$1; shift
+done
+
+exit $res
